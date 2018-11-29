@@ -1,12 +1,12 @@
-VerySimpleXML v2.0.4 - a lightweight, one-unit, cross-platform XML reader/writer
-for Delphi 2010 - 10.2.2 Tokyo by Dennis Spreen
-http://blog.spreendigital.de/2014/09/13/verysimplexml-2-0/
+{ VerySimpleXML v2.2.2 - a lightweight, one-unit, cross-platform XML reader/writer
+  for Delphi 2010-XE10.2 by Dennis Spreen
+  http://blog.spreendigital.de/2011/11/10/verysimplexml-a-lightweight-delphi-xml-reader-and-writer/
 
-(c) Copyrights 2018 Dennis D. Spreen <dennis@spreendigital.de>
-This unit is free and can be used for any needs. The introduction of
-any changes and the use of those changed library is permitted without
-imitations. Only requirement:
-This text must be present without changes in all modifications of library.
+  (c) Copyrights 2011-2018 Dennis D. Spreen <dennis@spreendigital.de>
+  This unit is free and can be used for any needs. The introduction of
+  any changes and the use of those changed library is permitted without
+  limitations. Only requirement:
+  This text must be present without changes in all modifications of library.
 
   * The contents of this file are used with permission, subject to
   * the Mozilla Public License Version 1.1 (the "License"); you may   *
@@ -18,3 +18,8 @@ This text must be present without changes in all modifications of library.
   * "AS IS" basis, WITHOUT WARRANTY OF ANY KIND, either express or    *
   * implied. See the License for the specific language governing      *
   * rights and limitations under the License.                         *
+}
+{
+  XSD schema support and some useful things - made by NevTon.
+  Portions copyright (C) 2015-2018 Grzegorz Molenda aka NevTon; ViTESOFT.net; <gmnevton@o2.pl>
+}
