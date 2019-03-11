@@ -1,4 +1,4 @@
-{ VerySimpleXML v2.2.2 - a lightweight, one-unit, cross-platform XML reader/writer
+{ VerySimpleXML v2.2.3 - a lightweight, one-unit, cross-platform XML reader/writer
   for Delphi 2010-XE10.2 by Dennis Spreen
   http://blog.spreendigital.de/2011/11/10/verysimplexml-a-lightweight-delphi-xml-reader-and-writer/
 
@@ -21,7 +21,7 @@
 }
 {
   XSD schema support and some useful things - made by NevTon.
-  Portions copyright (C) 2015-2018 Grzegorz Molenda aka NevTon; ViTESOFT.net; <gmnevton@o2.pl>
+  Portions copyright (C) 2015-2019 Grzegorz Molenda aka NevTon; ViTESOFT.net; <gmnevton@o2.pl>
 }
 unit Xml.VerySimple;
 
@@ -156,7 +156,8 @@ type
     ///	<summary> Text value of the node </summary>
     Text: String;
     /// <summary> Creates a new XML node </summary>
-    constructor Create(ANodeType: TXmlNodeType = ntElement); virtual;
+    constructor Create(ANodeType: TXmlNodeType = ntElement); overload; virtual;
+    constructor Create(ANode: TXmlNode); overload; virtual;
     ///	<summary> Removes the node from its parent and frees all of its childs </summary>
     destructor Destroy; override;
     /// <summary> Assigns an existing XML node to this </summary>
@@ -650,6 +651,7 @@ begin
   else
     Stream := TStringStream.Create('', TEncoding.ANSI);
   try
+    Stream.Position:=0;
     SaveToStream(Stream);
     Result := Stream.DataString;
   finally
@@ -1424,6 +1426,14 @@ begin
   FLevel:=0;
   FIndex:=0;
   UserData:='';
+end;
+
+constructor TXmlNode.Create(ANode: TXmlNode);
+begin
+  Create(ANode.NodeType);
+  ParentNode:=Nil;
+  Document:=Nil;
+  Assign(ANode);
 end;
 
 destructor TXmlNode.Destroy;
