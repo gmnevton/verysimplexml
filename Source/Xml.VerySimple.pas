@@ -1,8 +1,8 @@
-{ VerySimpleXML v2.2.3 - a lightweight, one-unit, cross-platform XML reader/writer
-  for Delphi 2010-XE10.2 by Dennis Spreen
+{ VerySimpleXML v2.3.1 - a lightweight, one-unit, cross-platform XML reader/writer
+  for Delphi 2010-XE10.3 by Dennis Spreen
   http://blog.spreendigital.de/2011/11/10/verysimplexml-a-lightweight-delphi-xml-reader-and-writer/
 
-  (c) Copyrights 2011-2018 Dennis D. Spreen <dennis@spreendigital.de>
+  (c) Copyrights 2011-2020 Dennis D. Spreen <dennis@spreendigital.de>
   This unit is free and can be used for any needs. The introduction of
   any changes and the use of those changed library is permitted without
   limitations. Only requirement:
@@ -21,7 +21,8 @@
 }
 {
   XSD schema support and some useful things - made by NevTon.
-  Portions copyright (C) 2015-2019 Grzegorz Molenda aka NevTon; ViTESOFT.net; <gmnevton@o2.pl>
+  XPATH support made by NevTon.
+  Portions copyright (C) 2015-2020 Grzegorz Molenda aka NevTon; ViTESOFT.net; <gmnevton@o2.pl>
 }
 unit Xml.VerySimple;
 
@@ -34,11 +35,26 @@ uses
 
 const
   TXmlSpaces = #$20 + #$0A + #$0D + #9;
+  //
+  sSourcePosition = #13#10'Pos: %d';
+  //
+  sParserUnexpected = 'Expected %s but got %s.' + sSourcePosition;
+  sInvalidFloatingPt = 'Invalid floating-point constant - expected one or more digits after ".".' + sSourcePosition;
+  sInvalidFloatingPtExpt = 'Invalid floating-point constant - expected one or more digits as part of exponent.' + sSourcePosition;
+  sUnterminatedString = 'Unterminated string found.' + sSourcePosition;
+  sInvalidOperator = 'Invalid operator in source (%s).' + sSourcePosition;
+  sInvalidOperatorChar = 'Invalid character in source (%s).' + sSourcePosition;
+  sExpectedEOF = 'Expected EOF! There is trailing text in expression.' + sSourcePosition;
+  sTooManyArgs = 'Too many arguments ( >65535 ).' + sSourcePosition;
+  sExpectedIdentifier = 'Expected an identifier, number or string.' + sSourcePosition;
 
 type
+//  EXmlVerySimple = class(Exception);
+  EXmlXPathException = class(Exception);
+
   TXmlVerySimple = class;
   TXmlNode = class;
-  TXmlNodeType = (ntElement, ntText, ntCData, ntProcessingInstr, ntComment, ntDocument, ntDocType, ntXmlDecl);
+  TXmlNodeType = (ntElement, ntAttribute, ntText, ntCData, ntProcessingInstr, ntComment, ntDocument, ntDocType, ntXmlDecl);
   TXmlNodeTypes = set of TXmlNodeType;
   TXmlNodeList = class;
   TXmlAttributeType = (atValue, atSingle);
@@ -96,10 +112,31 @@ type
     property Value: String read FValue write SetValue;
   end;
 
-  TXmlAttributeList = class(TObjectList<TXmlAttribute>)
+  TXmlObjectList = class(TObjectList<TObject>)
   public
     ///	<summary> The xml document of the attribute list of the node</summary>
     [Weak] Document: TXmlVerySimple;
+  end;
+
+  TXmlAttributeList = class;
+
+  TXmlAttributeEnumerator = class
+  private
+    FAttributeList: TXmlAttributeList;
+    FIndex: Integer;
+  public
+    constructor Create(List: TXmlAttributeList);
+    function GetCurrent: TXmlAttribute;
+    function MoveNext: Boolean;
+    property Current: TXmlAttribute read GetCurrent;
+  end;
+
+  TXmlAttributeList = class(TXmlObjectList)
+  public
+    function First: TXmlAttribute; reintroduce;
+    function Last: TXmlAttribute; reintroduce;
+    function GetEnumerator: TXmlAttributeEnumerator; reintroduce;
+    ///
     ///	<summary> Add a name only attribute </summary>
     function Add(const Name: String): TXmlAttribute; overload; virtual;
     ///	<summary> Returns the attribute given by name (case insensitive), NIL if no attribute found </summary>
@@ -125,6 +162,9 @@ type
     FIndex: Cardinal; // node index in nodes list structure
     FPrevSibling,           // link to the node's previous sibling or nil if it is the first node
     FNextSibling: TXmlNode; // link to the node's next sibling or nil if it is the last node
+    SkipIndent: Boolean; // used internally to tighten the output of xml nodes to string representation
+    ///	<summary> LineBreak used for the xml output, default set to sLineBreak which is OS dependent </summary>
+    LineBreak: String;
 
     procedure SetName(Value: String);
     function GetName: String;
@@ -139,9 +179,12 @@ type
 //    function FindNodesRecursive(const Name: String; NodeTypes: TXmlNodeTypes = [ntElement]): TXmlNodeList; virtual;
   protected
     [Weak] FDocument: TXmlVerySimple;
+
     procedure SetDocument(Value: TXmlVerySimple);
     function GetAttr(const AttrName: String): String; virtual;
     procedure SetAttr(const AttrName: String; const AttrValue: String); virtual;
+    procedure Compose(Writer: TStreamWriter; RootNode: TXmlNode); virtual;
+    procedure Walk(Writer: TStreamWriter; const PrefixNode: String; Node: TXmlNode); virtual;
   public
     ///	<summary> All attributes of the node </summary>
     AttributeList: TXmlAttributeList;
@@ -162,6 +205,10 @@ type
     destructor Destroy; override;
     /// <summary> Assigns an existing XML node to this </summary>
     procedure Assign(const Node: TXmlNode); virtual;
+    /// <summary> Assigns an existing XML node attributes to this </summary>
+    procedure AssignAttributes(const Node: TXmlNode; const AddNotExistingOnly: Boolean = False); virtual;
+    ///	<summary> Gets text representation of current node </summary>
+    function AsString: String; virtual;
     ///	<summary> Gets name and prefix (if available) from given value string </summary>
     class procedure GetNameAndPrefix(const Value: String; var Name, Prefix: String);
     ///	<summary> Clears the attributes, the text and all of its child nodes (but not the name) </summary>
@@ -207,9 +254,11 @@ type
     ///	<summary> Fluent interface for setting the node attribute given by attribute name and attribute value </summary>
     function SetAttribute(const AttrName, AttrValue: String): TXmlNode; virtual;
     ///	<summary> Returns first child or NIL if there aren't any child nodes </summary>
-    function FirstChild: TXmlNode; virtual;
+    function FirstChild: TXmlNode; overload; virtual;
+    function FirstChild(const Name: String): TXmlNode; overload; virtual;
     ///	<summary> Returns last child node or NIL if there aren't any child nodes </summary>
-    function LastChild: TXmlNode; virtual;
+    function LastChild: TXmlNode; overload; virtual;
+    function LastChild(const Name: String): TXmlNode; overload; virtual;
     ///	<summary> Returns previous sibling </summary>
     function PreviousSibling: TXmlNode; overload; virtual;
     ///	<summary> Returns next sibling </summary>
@@ -240,20 +289,38 @@ type
     property Index: Cardinal read FIndex;
   end;
 
-  TXmlNodeList = class(TObjectList<TXmlNode>)
+  TXmlNodeEnumerator = class
+  private
+    FNodeList: TXmlNodeList;
+    FIndex: Integer;
+  public
+    constructor Create(List: TXmlNodeList);
+    function GetCurrent: TXmlNode;
+    function MoveNext: Boolean;
+    property Current: TXmlNode read GetCurrent;
+  end;
+
+  TXmlNodeList = class(TXmlObjectList)
   private
     function IsSame(const Value1, Value2: String): Boolean;
   public
-    ///	<summary> The xml document of the node list </summary>
-    [Weak] Document: TXmlVerySimple;
     ///	<summary> The parent node of the node list </summary>
     [Weak] Parent: TXmlNode;
+    //
+    function First: TXmlNode; reintroduce;
+    function Last: TXmlNode; reintroduce;
+    function GetEnumerator: TXmlNodeEnumerator; reintroduce;
+    ///
     ///	<summary> Adds a node and sets the parent of the node to the parent of the list </summary>
     function Add(Value: TXmlNode): Integer; overload; virtual;
+    ///	<summary> Adds a node and sets the parent of the node to the parent of the list </summary>
+    function Add(Value: TXmlNode; ParentNode: TXmlNode): Integer; overload; virtual;
     ///	<summary> Creates a new node of type NodeType (default ntElement) and adds it to the list </summary>
     function Add(NodeType: TXmlNodeType = ntElement): TXmlNode; overload; virtual;
     ///	<summary> Add a child node with an optional NodeType (default: ntElement)</summary>
     function Add(const Name: String; NodeType: TXmlNodeType = ntElement): TXmlNode; overload; virtual;
+    ///	<summary> Add nodes from another list </summary>
+    procedure Add(const List: TXmlNodeList); overload; virtual;
     ///	<summary> Inserts a node at the given position </summary>
     function Insert(const Name: String; Position: Integer; NodeType: TXmlNodeType = ntElement): TXmlNode; overload; virtual;
     ///	<summary> Inserts a node at the given position </summary>
@@ -276,6 +343,8 @@ type
     function HasNode(const Name: String; NodeTypes: TXmlNodeTypes = [ntElement]): Boolean; virtual;
     ///	<summary> Returns the first child node, same as .First </summary>
     function FirstChild: TXmlNode; virtual;
+    ///	<summary> Returns the last child node, same as .Last </summary>
+    function LastChild: TXmlNode; virtual;
     ///	<summary> Returns previous sibling node </summary>
     function PreviousSibling(Node: TXmlNode): TXmlNode; virtual;
     ///	<summary> Returns next sibling node </summary>
@@ -299,7 +368,6 @@ type
     Root: TXmlNode;
     [Weak] FHeader: TXmlNode;
     [Weak] FDocumentElement: TXmlNode;
-    SkipIndent: Boolean;
     XmlEscapeProcedure: TXmlEscapeProcedure;
     procedure Parse(Reader: TXmlReader); virtual;
     procedure ParseComment(Reader: TXmlReader; var Parent: TXmlNode); virtual;
@@ -309,14 +377,12 @@ type
     procedure ParseText(const Line: String; Parent: TXmlNode); virtual;
     function ParseTag(Reader: TXmlReader; ParseText: Boolean; var Parent: TXmlNode): TXmlNode; overload; virtual;
     function ParseTag(const TagStr: String; var Parent: TXmlNode): TXmlNode; overload; virtual;
-    procedure Walk(Writer: TStreamWriter; const PrefixNode: String; Node: TXmlNode); virtual;
     procedure SetText(const Value: String); virtual;
     function GetText: String; virtual;
     procedure SetEncoding(const Value: String); virtual;
     function GetEncoding: String; virtual;
     procedure SetVersion(const Value: String); virtual;
     function GetVersion: String; virtual;
-    procedure Compose(Writer: TStreamWriter); virtual;
     procedure SetStandAlone(const Value: String); virtual;
     function GetStandAlone: String; virtual;
     function GetChildNodes: TXmlNodeList; virtual;
@@ -336,6 +402,8 @@ type
     LineBreak: String;
     ///	<summary> Options for xml output like indentation type </summary>
     Options: TXmlOptions;
+    /// <summary> XPath nodes delimiter char </summary>
+    XPathDelimiter: Char;
     ///	<summary> Creates a new XML document parser </summary>
     constructor Create; virtual;
     ///	<summary> Destroys the XML document parser </summary>
@@ -360,11 +428,15 @@ type
     function LoadFromStream(const Stream: TStream; BufferSize: Integer = 4096): TXmlVerySimple; virtual;
     ///	<summary> Parse attributes into the attribute list for a given string </summary>
     procedure ParseAttributes(const AttribStr: String; AttributeList: TXmlAttributeList); virtual;
+    ///	<summary> Selects node by evaluating XPath expression, creates nodes tree if necessary </summary>
+    function SelectNode(const XPathExpression: String; RootNode: TXmlNode = Nil): TXmlNode; virtual;
+    ///	<summary> Selects nodes by evaluating XPath expression, allways returns a list that must be manually destroyed </summary>
+    function SelectNodes(const XPathExpression: String; RootNode: TXmlNode = Nil): TXmlNodeList; virtual;
     ///	<summary> Saves the XML to a file </summary>
     function SaveToFile(const FileName: String): TXmlVerySimple; overload; virtual;
     function SaveToFile(const FileName: String; const EscapeProcedure: TXmlEscapeProcedure): TXmlVerySimple; overload; virtual;
     ///	<summary> Saves the XML to a stream, the encoding is specified in the .Encoding property </summary>
-    function SaveToStream(const Stream: TStream): TXmlVerySimple; virtual;
+    function SaveToStream(const Stream: TStream; const RootNode: TXmlNode = Nil): TXmlVerySimple; virtual;
     ///	<summary> A list of all root nodes of the document </summary>
     property ChildNodes: TXmlNodeList read GetChildNodes;
     ///	<summary> Returns the first element node </summary>
@@ -432,7 +504,7 @@ const
 {$ELSE} // For any previous Delphi version overwrite High() function and use 1 as string index base
   LowStr = 1;  // Use 1 as string index base
 
-function High(const Value: String): Integer; inline;
+function High(const Value: String): Integer; overload; inline;
 begin
   Result := Length(Value);
 end;
@@ -456,6 +528,1294 @@ begin
   Result := TEncoding.Default;
 end;
 {$IFEND}
+
+{
+  Simplified XPath expression evaluator.
+    Based on XPath tutorial from: https://www.w3schools.com/xml/xpath_intro.asp
+
+  Currently supported are:
+    > Syntax elements:
+        nodename                  selects all child nodes of the node
+        /                         selects from the root node
+        //                        selects in complete subtree
+        @                         selects attributes
+        .                         selects the current node
+        ..                        selects the parrent of the current node
+
+
+    > Predicates:
+        [n]                       selects the n-th subelement of the current element ('n' is a number, first subelement has index 1)
+        [@attr]                   selects all subelements that have an attribute named 'attr'
+        [@attr='x']               selects all subelements that have an attribute named 'attr' with a value of 'x'
+        [@attr="x"]               or
+        [node]                    selects all subelements named 'node'
+        [node='x']                selects all subelements named node containing text 'x'
+        [node="x"]                or
+
+
+    > Wildcards:
+        *                         matches any element node
+        @*                        matches any attribute node
+
+
+    > XPath axes: - !!! NOT SUPPORTED !!!
+        ancestor                  selects all ancestors (parent, grandparent, etc.) of the current node
+        ancestor-or-self          selects all ancestors (parent, grandparent, etc.) of the current node and the current node itself
+        attribute                 selects all attributes of the current node
+        child                     selects all children of the current node
+        descendant                selects all descendants (children, grandchildren, etc.) of the current node
+        descendant-or-self        selects all descendants (children, grandchildren, etc.) of the current node and the current node itself
+        following                 selects everything in the document after the closing tag of the current node
+        following-sibling         selects all siblings after the current node
+        namespace                 selects all namespace nodes of the current node
+        parent                    selects the parent of the current node
+        preceding                 selects all nodes that appear before the current node in the document, except ancestors, attribute nodes and namespace nodes
+        preceding-sibling         selects all siblings before the current node
+        self                      selects the current node
+
+
+    > Location Path Expression:
+        An absolute location path:
+          /step/step/...
+
+        A relative location path:
+          step/step/...
+
+        axisname::nodetest[predicate] - !!! NOT SUPPORTED !!!
+
+      Examples:
+        child::book               selects all book nodes that are children of the current node
+        attribute::lang           selects the lang attribute of the current node
+        child::*                  selects all element children of the current node
+        attribute::*              selects all attributes of the current node
+        child::text()             selects all text node children of the current node
+        child::node()             selects all children of the current node
+        descendant::book          selects all book descendants of the current node
+        ancestor::book            selects all book ancestors of the current node
+        ancestor-or-self::book    selects all book ancestors of the current node - and the current as well if it is a book node
+        child::*/child::price     selects all price grandchildren of the current node
+
+
+    > XPath Operators:
+        |       Computes two node-sets          //book | //cd
+        +       Addition                        6 + 4
+        -       Subtraction                     6 - 4
+        *       Multiplication                  6 * 4
+        div     Integer division                8 div 4
+        =       Equal                           price = 9.80
+        !=      Not equal                       price != 9.80
+        <       Less than                       price < 9.80
+        <=      Less than or equal to           price <= 9.80
+        >       Greater than                    price > 9.80
+        >=      Greater than or equal to        price >= 9.80
+        or      or                              price = 9.80 or price = 9.70
+        and     and                             price > 9.00 and price < 9.90
+        mod     Modulus (division remainder)    5 mod 2
+
+
+  Examples:
+    bookstore                               selects all nodes with the name "bookstore"
+    /bookstore                              selects the root element bookstore
+                                              note: If the path starts with a slash ( / ) it always represents an absolute path to an element
+    bookstore/book                          selects all book elements that are children of bookstore
+    //book                                  selects all book elements no matter where they are in the document
+    bookstore//book                         selects all book elements that are descendant of the bookstore element, no matter where they are under the bookstore element
+    //@lang                                 selects all attributes that are named lang
+
+    /bookstore/book[1]                      selects the first book element that is the child of the bookstore element
+                                              note: In IE 5,6,7,8,9 first node is[0], but according to W3C, it is [1]
+    //title[@lang]                          selects all the title elements that have an attribute named lang
+    //title[@lang='en']                     selects all the title elements that have a "lang" attribute with a value of "en"
+    //title                                 select all titles
+    /bookstore/book/title                   select all titles
+    /bookstore//title[@lang]                select all titles with lang attribute
+    /bookstore/book[3]/*                    select all nodes of the third book
+    /bookstore/book[1]/title/@lang          select language of the first book
+    /bookstore/book/title/@lang             select all languages
+    //title/@lang                           select all languages
+    //book//@lang                           select all languages
+    /bookstore/*                            selects all the child element nodes of the bookstore element
+    //*                                     selects all elements in the document
+    //title[@*]                             selects all title elements which have at least one attribute of any kind
+
+  Not working at this time:
+    /bookstore/book[last()]                 selects the last book element that is the child of the bookstore element
+    /bookstore/book[last()-1]               selects the last but one book element that is the child of the bookstore element
+    /bookstore/book[position()<3]           selects the first two book elements that are children of the bookstore element
+    /bookstore/book[price>35.00]            selects all the book elements of the bookstore element that have a price element with a value greater than 35.00
+    /bookstore/book[price>35.00]/title      selects all the title elements of the book elements of the bookstore element that have a price element with a value greater than 35.00
+    /bookstore/book/title[@lang=''en'']     select all english books
+    //title[@lang=''en'']                   select all english books
+    /bookstore//book[title="Harry Potter"]  select all Harry Potter books
+    @lang                                   select lang attribute of the current node
+    title                                   select the title subnode of some node
+    ./title                                 select the title subnode of some node
+    //book/title | //book/price             selects all the title AND price elements of all book elements
+    //title | //price                       selects all the title AND price elements in the document
+    /bookstore/book/title | //price         selects all the title elements of the book element of the bookstore element AND all the price elements in the document
+}
+type
+// Documentation:
+// 1.0) https://www.w3.org/TR/1999/REC-xpath-19991116/#exprlex
+// 2.0) https://www.w3.org/TR/2010/REC-xpath20-20101214/#id-predicates
+// 3.0) https://www.w3.org/TR/2014/REC-xpath-30-20140408/
+// 3.1) https://www.w3.org/TR/2017/REC-xpath-31-20170321/
+//
+//
+// :From-1.0:
+// When tokenizing, the longest possible token is always returned.
+// For readability, whitespace may be used in expressions even though not explicitly allowed by the grammar:
+//   ExprWhitespace may be freely added within patterns before or after any ExprToken.
+//
+// The following special tokenization rules must be applied in the order specified to disambiguate the ExprToken grammar:
+//   - If there is a preceding token and the preceding token is not one of @, ::, (, [ or an Operator,
+//     then a * must be recognized as a MultiplyOperator and an NCName must be recognized as an OperatorName.
+//   - If the character following an NCName (possibly after intervening ExprWhitespace) is (,
+//     then the token must be recognized as a NodeType or a FunctionName.
+//   - If the two characters following an NCName (possibly after intervening ExprWhitespace) are ::,
+//     then the token must be recognized as an AxisName.
+//   - Otherwise, the token MUST NOT be recognized as a MultiplyOperator, an OperatorName, a NodeType, a FunctionName, or an AxisName.
+//
+// ExprWhitespace ::= (#x20 | #x9 | #xD | #xA)+
+//
+// regexp quantifiers:
+// * - match zero or more
+// ? - match zero or one
+// + - match one or more
+
+  TXmlXPathPredicateExpression = class
+  private
+    FRootNode: TXmlNode;
+    FSource: String;
+    FSourceStart: PChar;
+  protected type
+    TLexicalToken = (
+      lexBof,
+      lexEof,
+      lexIdent,    // 'nodename'
+      lexAttrib,   // '@attribname'
+      //lexNameTest, // NameTest ::= '*' | NCName ':' '*' | QName
+      //lexNodeType, // NodeType ::= 'comment' | 'text' | 'processing-instruction' | 'node'
+      //lexOperator, // Operator ::= OperatorName | MultiplyOperator | '/' | '//' | '|' | '+' | '-' | '=' | '!=' | '<' | '<=' | '>' | '>='
+      //lexOperatorName, // OperatorName ::= 'and' | 'or' | 'mod' | 'div' | 'idiv'(2.0)
+      //lexOperatorMultiply, // MultiplyOperator ::= '*'
+      //lexFunctionName, // FunctionName ::= QName - NodeType
+      //lexAxisName, // AxisName ::= 'ancestor' | 'ancestor-or-self' | 'attribute' | 'child' | 'descendant' | 'descendant-or-self' | 'following' | 'following-sibling' | 'namespace'
+                   //              | 'parent' | 'preceding' | 'preceding-sibling' | 'self'
+      //lexLiteral,  // Literal ::= '"' [^"]* '"' | "'" [^']* "'" ---> string
+      lexString,
+      //lexNumber,   // Number ::= Digits ('.' Digits?)? | '.' Digits ---> integer or float
+                     // Digits ::= [0-9]+
+      lexInteger,
+      lexFloat,
+      lexVariableReference, // VariableReference ::= '$' QName
+
+      lexPlus,         // '+'
+      lexMinus,        // '-'
+      lexAsterisk,     // '*'
+      lexSlash,        // '/'
+      lexSlashSlash,   // '//'
+      lexPipe,         // '|'
+      lexEqualTo,      // '='  or eq
+      lexNotEqual,     // '!=' or ne
+      lexLessThan,     // '<'  or lt
+      lexLessEqual,    // '<=' or le
+      lexGreaterThan,  // '>'  or gt
+      lexGreaterEqual, // '>=' or ge
+
+      lexLParen,       // '('
+      lexRParen,       // ')'
+      lexLBracket,     // '['
+      lexRBracket,     // ']'
+      lexDot,          // '.'
+      lexDotDot,       // '..'
+      lexAt,           // '@'
+      lexComma,        // ','
+      lexColon,        // ':'
+      lexColonColon    // '::'
+    );
+    // :From-3.0:
+    // The grammar in A.1 EBNF normatively defines built-in precedence among the operators of XQuery.
+    // These operators are summarized here to make clear the order of their precedence from lowest to highest.
+    // The associativity column indicates the order in which operators of equal precedence in an expression are applied.
+    //
+    // #   Operator                                                    Associativity
+    //  1  , (comma)                                                   either
+    //  2  for, let, some, every, if                                   NA
+    //  3  or                                                          either
+    //  4  and                                                         either
+    //  5  eq, ne, lt, le, gt, ge, =, !=, <, <=, >, >=, is, <<, >>     NA
+    //  6  ||                                                          left-to-right
+    //  7  to                                                          NA
+    //  8  +, - (binary)                                               left-to-right
+    //  9  *, div, idiv, mod                                           left-to-right
+    // 10  union, |                                                    either
+    // 11  intersect, except                                           left-to-right
+    // 12  instance of                                                 NA
+    // 13  treat as                                                    NA
+    // 14  castable as                                                 NA
+    // 15  cast as                                                     NA
+    // 16  -, + (unary)                                                * right-to-left *
+    // 17  !                                                           left-to-right
+    // 18  /, //                                                       left-to-right
+    // 19  [, ]                                                        left-to-right
+    //
+    // In the "Associativity" column, "either" indicates that all the operators at that level have the associative property:
+    //   (i.e., (A op B) op C is equivalent to A op (B op C)), so their associativity is inconsequential.
+    //   "NA" (not applicable) indicates that the EBNF does not allow an expression that directly contains multiple operators from that precedence level,
+    //   so the question of their associativity does not arise.
+    //
+    // Note:
+    //   Parentheses can be used to override the operator precedence in the usual way.
+    //   Square brackets in an expression such as A[B] serve two roles:
+    //     they act as an operator causing B to be evaluated once for each item in the value of A, and they act as parentheses enclosing the expression B.
+    //
+    TLexicalPriority = (
+      priNon    = 0, // non-binding operators like ;
+      priTop    = 1, //
+      priAssign = 2, // assignment operators like =
+      priCondOp = 3, // ?, if..then..else
+      priBoolOp = 4, // or, and
+      priRelOp  = 5, // relational operators like ==, !=/<>, <, >, <=, >=
+      priAddOp  = 6, // +, -
+      priMulOp  = 7, // *, /
+      priSingle = 8, // unary operators like !
+      priDotOp  = 9  // . [ (
+    );
+  private
+    procedure SetToken(Token: TLexicalToken; cp: PChar); inline;
+  protected
+    FCurrPos: PChar;
+    FLastLastToken,
+    FLastToken,
+    FCurrToken: TLexicalToken;
+    FStringToken: String;
+    FIntegerToken: Int64;
+    FFloatToken: Extended;
+    FFormat: TFormatSettings;
+    //
+    class function TokenName(Token: TLexicalToken): String; virtual; // returns the name of a given token type
+    function Position: Integer; virtual;
+    function IsWhiteSpace(C: Char): Boolean; inline;
+    function IsNameTest(const CurrToken: TLexicalToken; const StringToken: String; const CurrPos: PChar): Boolean; // NameTest ::= '*' | NCName ':' '*' | QName
+    function IsNodeType: Boolean; // NodeType ::= 'comment' | 'text' | 'processing-instruction' | 'node'
+    function IsOperator: Boolean; inline; // Operator ::= OperatorName | MultiplyOperator | '/' | '//' | '|' | '+' | '-' | '=' | '!=' | '<' | '<=' | '>' | '>='
+    function IsOperatorName: Boolean; inline; // OperatorName ::= 'and' | 'or' | 'mod' | 'div' | 'idiv'(2.0)
+    function IsOperatorMultiply: Boolean; inline; // MultiplyOperator ::= '*'
+    function IsFunctionName: Boolean; // FunctionName ::= QName - NodeType
+    function IsAxisName: Boolean; // AxisName ::= 'ancestor' | 'ancestor-or-self' | 'attribute' | 'child' | 'descendant' | 'descendant-or-self' | 'following' | 'following-sibling' | 'namespace' | 'parent' | 'preceding' | 'preceding-sibling' | 'self'
+    procedure NextToken; virtual; // it implements the lexer for the parser
+    procedure ExpectToken(Token: TLexicalToken); virtual;
+    procedure EatToken(Token: TLexicalToken); virtual;
+    function SkipTokenIf(Token: TLexicalToken): Boolean; virtual;
+    procedure ParsePriority(Priority: TLexicalPriority; const Skip: Boolean = False); virtual; // the parser engine
+    function IdentToToken: TLexicalToken; virtual;
+    procedure Error(const Msg: String); overload; virtual;
+    procedure Error(const Msg: String; const Args: Array of const); overload; virtual;
+  public
+    constructor Create(const ARootNode: TXmlNode; const ASource: String);
+    destructor Destroy; override;
+    //
+    function Parse: TXmlNodeList;
+    property Format: TFormatSettings read FFormat write FFormat;
+  end;
+
+  TXmlXPathSelectionFlag = (selScanTree);
+  TXmlXPathSelectionFlags = set of TXmlXPathSelectionFlag;
+
+  // Source - https://github.com/mremec/omnixml/blob/master/OmniXMLXPath.pas
+  TXmlXPathEvaluator = class
+  private
+    FExpression: String;
+    FNodeDelimiter: Char;
+    FExpressionPos: Integer;
+    //FExpressionParser: TXmlXPathPredicateExpression;
+  protected
+    procedure GetChildNodes(List: TXMLNodeList; Node: TXMLNode; const Element: String; element_type: TXmlNodeType; Recurse: Boolean);
+    procedure EvaluateNode(List: TXMLNodeList; Node: TXmlNode; Element, Predicate: String; Flags: TXmlXPathSelectionFlags);
+    procedure EvaluatePart(SrcList, DestList: TXMLNodeList; const Element, Predicate: String; Flags: TXmlXPathSelectionFlags);
+    procedure FilterByAttrib(SrcList, DestList: TXmlNodeList; const AttrName, AttrValue: String; const NotEQ: Boolean);
+    procedure FilterByChild(SrcList, DestList: TXmlNodeList; const ChildName, ChildValue: String);
+    procedure FilterByFunction(SrcList, DestList: TXmlNodeList; ChildName, ChildValue: String);
+    procedure FilterNodes(SrcList, DestList: TXMLNodeList; Predicate: String);
+  protected
+    function GetNextExpressionPart(var Element, Predicate: String; var Flags: TXmlXPathSelectionFlags): Boolean;
+    procedure SplitExpression(const Predicate: String; var left, op, right: String);
+  public
+    constructor Create;
+    //
+    function Evaluate(RootNode: TXmlNode; const Expression: String; const NodeDelimiter: Char = '/'): TXmlNodeList;
+    property NodeDelimiter: Char read FNodeDelimiter write FNodeDelimiter;
+  end;
+
+{ TXmlXPathPredicateExpression }
+
+constructor TXmlXPathPredicateExpression.Create(const ARootNode: TXmlNode; const ASource: String);
+begin
+  GetLocaleFormatSettings(0, FFormat);
+  FFormat.ThousandSeparator:=#0;
+  FFormat.DecimalSeparator:='.';
+  FRootNode:=ARootNode;
+  FSource:=ASource;
+  FSourceStart:=PChar(FSource);
+  FCurrPos:=FSourceStart;
+  FLastLastToken:=lexBof;
+  FLastToken:=lexBof;
+end;
+
+destructor TXmlXPathPredicateExpression.Destroy;
+begin
+  FStringToken:='';
+  FCurrPos:=Nil;
+  FSourceStart:=Nil;
+  FSource:='';
+  FRootNode:=Nil;
+  inherited;
+end;
+
+procedure TXmlXPathPredicateExpression.SetToken(Token: TLexicalToken; cp: PChar);
+begin
+  FLastLastToken:=FLastToken;
+  FLastToken:=FCurrToken;
+  FCurrToken:=Token;
+  FCurrPos:=cp;
+end;
+
+class function TXmlXPathPredicateExpression.TokenName(Token: TLexicalToken): String;
+const
+  TokenStr: Array[TLexicalToken] of String = (
+    '<bof>', '<eof>', '<ident>', '<attrib>',{ '<name_test>', '<node_type>', '<operator>', '<function_name>', '<axis_name>',}
+    '<string>', '<integer>', '<float>', '<variable_reference>',
+    '"+"', '"-"', '"*"', '"/"', '"//"', '"|"', '"="', '"<>"', '"<"', '"<="', '">"', '">="',
+    '"("', '")"', '"["', '"]"', '"."', '".."', '"@"', '","', '":"', '"::"'
+  );
+begin
+  Result:=TokenStr[Token];
+end;
+
+function TXmlXPathPredicateExpression.Position: Integer;
+begin
+  Result:=FCurrPos - FSourceStart + 1;
+end;
+
+function TXmlXPathPredicateExpression.IsWhiteSpace(C: Char): Boolean;
+begin
+  Result:=False;
+  if Integer(C) <= $FF then // (#x20 | #x9 | #xD | #xA)
+    Result := (C = ' ') or (C = #$09) or (C = #$0D) or (C = #$0A);
+end;
+
+function TXmlXPathPredicateExpression.IsNameTest(const CurrToken: TLexicalToken; const StringToken: String; const CurrPos: PChar): Boolean;
+begin
+  // NameTest ::= '*' | NCName ':' '*' | QName
+  Result:=((CurrToken = lexAsterisk) and not IsOperatorMultiply) or
+          ((CurrToken = lexIdent) and (StringToken <> '') and (CurrPos <> #0) and (CurrPos[0] = ':') and (CurrPos[1] = '*')) or
+          ((CurrToken = lexIdent) and (StringToken <> ''));
+end;
+
+function TXmlXPathPredicateExpression.IsNodeType: Boolean;
+begin
+  // NodeType ::= 'comment' | 'text' | 'processing-instruction' | 'node'
+  Result:=(FCurrToken = lexIdent) and ((FStringToken = 'comment') or (FStringToken = 'text') or (FStringToken = 'processing-instruction') or (FStringToken = 'node'));
+end;
+
+function TXmlXPathPredicateExpression.IsOperator: Boolean;
+begin
+  // Operator ::= OperatorName | MultiplyOperator | '/' | '//' | '|' | '+' | '-' | '=' | '!=' | '<' | '<=' | '>' | '>='
+  Result:=IsOperatorName or IsOperatorMultiply or ((FCurrToken > lexVariableReference) and (FCurrToken < lexLParen));
+end;
+
+function TXmlXPathPredicateExpression.IsOperatorName: Boolean;
+begin
+  // OperatorName ::= 'and' | 'or' | 'mod' | 'div' | 'idiv'(2.0)
+  Result:=(FCurrToken = lexIdent) and ((FStringToken = 'and') or (FStringToken = 'or') or (FStringToken = 'mod') or (FStringToken = 'div') or (FStringToken = 'idiv'));
+end;
+
+function TXmlXPathPredicateExpression.IsOperatorMultiply: Boolean;
+begin
+// The following special tokenization rules must be applied in the order specified to disambiguate the ExprToken grammar:
+//   - If there is a preceding token and the preceding token is not one of @, ::, (, [ or an Operator,
+//     then a * must be recognized as a MultiplyOperator and an NCName must be recognized as an OperatorName.
+  // MultiplyOperator ::= '*'
+  Result:=(FCurrToken = lexAsterisk) and ((FLastToken in [lexAt, lexDotDot, lexLParen, lexLBracket]) or IsOperator);
+end;
+
+function TXmlXPathPredicateExpression.IsFunctionName: Boolean; // FunctionName ::= QName - NodeType
+begin
+
+end;
+
+function TXmlXPathPredicateExpression.IsAxisName: Boolean; // AxisName ::= 'ancestor' | 'ancestor-or-self' | 'attribute' | 'child' | 'descendant' | 'descendant-or-self' | 'following' | 'following-sibling' | 'namespace' | 'parent' | 'preceding' | 'preceding-sibling' | 'self'
+begin
+
+end;
+
+{
+      lexNameTest, // NameTest ::= '*' | NCName ':' '*' | QName
+      lexNodeType, // NodeType ::= 'comment' | 'text' | 'processing-instruction' | 'node'
+      lexOperator, // Operator ::= OperatorName | MultiplyOperator | '/' | '//' | '|' | '+' | '-' | '=' | '!=' | '<' | '<=' | '>' | '>='
+                   // OperatorName ::= 'and' | 'or' | 'mod' | 'div' | 'idiv'(2.0)
+                   // MultiplyOperator ::= '*'
+      lexFunctionName, // FunctionName ::= QName - NodeType
+      lexAxisName, // AxisName ::= 'ancestor' | 'ancestor-or-self' | 'attribute' | 'child' | 'descendant' | 'descendant-or-self' | 'following' | 'following-sibling' | 'namespace'
+                   //              | 'parent' | 'preceding' | 'preceding-sibling' | 'self'
+      //lexLiteral,  // Literal ::= '"' [^"]* '"' | "'" [^']* "'"
+      lexString,
+      //lexNumber,   // Number ::= Digits ('.' Digits?)? | '.' Digits
+                     // Digits ::= [0-9]+
+      lexInteger,
+      lexFloat,
+      lexVariableReference, // VariableReference ::= '$' QName
+
+      lexPlus,         // '+'
+      lexMinus,        // '-'
+      lexAsterisk,     // '*'
+      lexSlash,        // '/'
+      lexSlashSlash,   // '//'
+      lexPipe,         // '|'
+      lexEqualTo,      // '='  or eq
+      lexNotEqual,     // '!=' or ne
+      lexLessThan,     // '<'  or lt
+      lexLessEqual,    // '<=' or le
+      lexGreaterThan,  // '>'  or gt
+      lexGreaterEqual, // '>=' or ge
+
+      lexLParen,       // '('
+      lexRParen,       // ')'
+      lexLBracket,     // '['
+      lexRBracket,     // ']'
+      lexDot,          // '.'
+      lexDotDot,       // '..'
+      lexAt,           // '@'
+      lexComma,        // ','
+      lexColon,        // ':'
+      lexColonColon    // '::'
+}
+procedure TXmlXPathPredicateExpression.NextToken;
+var
+  cp, start: PChar;
+begin
+  // use local variable so hopefully compiler will use a register
+  cp:=FCurrPos;
+
+  // handle whitespace and end of file; consider adding comment support here
+  while IsWhiteSpace(cp^) do
+    Inc(cp);
+  if cp^ = #0 then begin
+    FCurrPos:=cp;
+    FCurrToken:=lexEof;
+    Exit;
+  end;
+
+  // determine token type based on first character
+  case cp^ of
+    'a'..'z', 'A'..'Z', '_': begin // identifier
+      start:=cp;
+      Inc(cp);
+      while True do begin
+        case cp^ of
+          'a'..'z', 'A'..'Z', '_', '0'..'9':
+            Inc(cp);
+        else
+          Break;
+        end;
+      end;
+      SetString(FStringToken, start, cp - start);
+      SetToken(lexIdent, cp);
+    end;
+
+    '@': begin // attribute
+      start:=cp;
+      Inc(cp);
+      while True do begin
+        case cp^ of
+          'a'..'z', 'A'..'Z', '_', '0'..'9':
+            Inc(cp);
+        else
+          Break;
+        end;
+      end;
+      SetString(FStringToken, start, cp - start);
+      SetToken(lexAttrib, cp);
+    end;
+
+// The following special tokenization rules must be applied in the order specified to disambiguate the ExprToken grammar:
+//   - If there is a preceding token and the preceding token is not one of @, ::, (, [, , or an Operator,
+//     then a * must be recognized as a MultiplyOperator and an NCName must be recognized as an OperatorName.
+//   - If the character following an NCName (possibly after intervening ExprWhitespace) is (,
+//     then the token must be recognized as a NodeType or a FunctionName.
+//   - If the two characters following an NCName (possibly after intervening ExprWhitespace) are ::,
+//     then the token must be recognized as an AxisName.
+//   - Otherwise, the token MUST NOT be recognized as a MultiplyOperator, an OperatorName, a NodeType, a FunctionName, or an AxisName.
+
+    '*': begin // NameTest or MultiplyOperator
+      if (FLastToken > lexBof) and ((FLastToken in [lexAt, lexDotDot, lexLParen, lexLBracket]) or
+
+         (((FLastToken = lexIdent) and ((FStringToken = 'and') or (FStringToken = 'or') or (FStringToken = 'mod') or (FStringToken = 'div') or (FStringToken = 'idiv'))) or
+         ((FCurrToken = lexAsterisk) and ((FLastToken in [lexAt, lexDotDot, lexLParen, lexLBracket]) or IsOperator)) or
+         ((FCurrToken > lexVariableReference) and (FCurrToken < lexLParen)))) then
+
+
+    end;
+
+    '0'..'9': begin // number of some kind
+      start:=cp;
+      Inc(cp);
+      while (cp^ >= '0') and (cp^ <= '9') do
+        Inc(cp);
+
+      if (cp^ <> '.') and (cp^ <> 'e') and (cp^ <> 'E') then begin
+        SetString(FStringToken, start, cp - start);
+        FIntegerToken:=StrToInt64(FStringToken);
+        SetToken(lexInteger, cp);
+        Exit;
+      end;
+
+      if cp^ = '.' then begin
+        Inc(cp);
+        if not ((cp^ >= '0') and (cp^ <= '9')) then
+          Error(sInvalidFloatingPt, [Position]);
+        while (cp^ >= '0') and (cp^ <= '9') do
+          Inc(cp);
+      end;
+
+      if (cp^ = 'e') or (cp^ = 'E') then begin
+        Inc(cp);
+        if (cp^ = '-') or (cp^ = '+') then
+          Inc(cp);
+        if not ((cp^ >= '0') and (cp^ <= '9')) then
+          Error(sInvalidFloatingPtExpt, [Position]);
+        while (cp^ >= '0') and (cp^ <= '9') do
+          Inc(cp);
+      end;
+
+      SetString(FStringToken, start, cp - start);
+      FFloatToken:=StrToFloat(FStringToken, FFormat);
+      SetToken(lexFloat, cp);
+    end;
+
+    '''': begin // string
+      Inc(cp);
+      start:=cp;
+      while True do begin
+        case cp^ of
+          #0: Error(sUnterminatedString, [Position]);
+          '''': begin
+            SetString(FStringToken, start, cp - start);
+            SetToken(lexString, cp + 1);
+            Break;
+          end;
+        else
+          Inc(cp);
+        end;
+      end;
+    end;
+
+    '"': begin // alt string (easier Pascal embedding)
+      Inc(cp);
+      start:=cp;
+      while True do begin
+        case cp^ of
+          #0: Error(sUnterminatedString, [Position]);
+          '"': begin
+            SetString(FStringToken, start, cp - start);
+            SetToken(lexString, cp + 1);
+            Break;
+          end;
+        else
+          Inc(cp);
+        end;
+      end;
+    end;
+
+    // single-character operators
+    '+': SetToken(lexPlus, cp + 1);
+    '-': SetToken(lexMinus, cp + 1);
+    //'*': SetToken(lexAsterisk, cp + 1);
+    '/': SetToken(lexSlash, cp + 1);
+    '(': SetToken(lexLParen, cp + 1);
+    ')': SetToken(lexRParen, cp + 1);
+    '[': SetToken(lexLBracket, cp + 1);
+    ']': SetToken(lexRBracket, cp + 1);
+    '.': SetToken(lexDot, cp + 1);
+//    ';': SetToken(lexSemicolon, cp + 1);
+    ',': SetToken(lexComma, cp + 1);
+    '=': SetToken(lexEqualTo, cp + 1);
+//    '!': SetToken(Self, lexNotEqual, cp + 1);
+
+    ':': begin // multi-character operators
+//        Error(sInvalidOperator, [cp[0] + cp[1], Position]);
+      if cp[1] = ':' then
+        SetToken(lexColonColon, cp + 2)
+      else
+        SetToken(lexColon, cp + 1);
+    end;
+
+    '<': begin
+      case cp[1] of
+        '=': SetToken(lexLessEqual, cp + 2);
+        '>': SetToken(lexNotEqual, cp + 2);
+      else
+        SetToken(lexLessThan, cp + 1);
+      end;
+    end;
+
+    '>': begin
+      if cp[1] = '=' then
+        SetToken(lexGreaterEqual, cp + 2)
+      else
+        SetToken(lexGreaterThan, cp + 1);
+    end;
+  else
+    Error(sInvalidOperatorChar, [cp^, Position]);
+  end;
+end;
+
+procedure TXmlXPathPredicateExpression.ExpectToken(Token: TLexicalToken);
+begin
+  if Token <> FCurrToken then
+    Error(sParserUnexpected, [TokenName(Token), TokenName(FCurrToken), Position]);
+end;
+
+procedure TXmlXPathPredicateExpression.EatToken(Token: TLexicalToken);
+begin
+  ExpectToken(Token);
+  NextToken;
+end;
+
+function TXmlXPathPredicateExpression.SkipTokenIf(Token: TLexicalToken): Boolean;
+begin
+  Result:=(FCurrToken = Token);
+  if Result then
+    NextToken;
+end;
+
+procedure TXmlXPathPredicateExpression.ParsePriority(Priority: TLexicalPriority; const Skip: Boolean = False);
+
+  function ParseArgs(StopToken: TLexicalToken): Word;
+  var
+    count: Integer;
+  begin
+    count:=0;
+    if FCurrToken <> StopToken then begin
+      repeat
+        ParsePriority(priAssign);
+//        PopUntil(RootScope); // get back to the function/array property context
+        Inc(count);
+      until not SkipTokenIf(lexComma);
+    end;
+    if count > System.High(Word) then
+      Error(sTooManyArgs, [Position]);
+    Result:=count;
+  end;
+
+  procedure ParseFactor(Skip: Boolean);
+//  var
+//    LWrapper: IInterface;
+//    LGroup: IGroup;
+//    LOrder: Integer;
+  begin
+    if Skip then
+      NextToken;
+    case FCurrToken of
+      lexEof: Exit;
+      lexIdent: begin
+{        case IdentToToken of
+          lexBooleanNot,
+          lexBooleanAnd,
+          lexBooleanOr,
+          lexBooleanXor: Exit;
+        else
+          FCommandStack.AddOpValue(opcLookup, FStringToken, FStringToken);
+        end;}
+          // create a wrapper for the current identifier; if the identifier
+          // denotes an indexed property or a method, grab a new result wrapper
+          // for it and make its scope the top one
+//          LGroup := nil;
+//          LOrder := 0;
+//          LWrapper := EnsureWrapper(FStringToken);
+//          if Supports(LWrapper, IGroup, LGroup) then
+//            LOrder := LGroup.Add(LWrapper);
+//          PushWrapperScope(LWrapper);
+
+          // generate program code for searching the wrapper; if we deal with a
+          // result wrapper, add code to search it in the group
+//        FCommandStack.AddOpValue(opcLookup, FStringToken, FStringToken);
+//          if Assigned(LGroup) then
+//            FBinding.AddOpValue(opLookupGroup, LOrder);
+      end;
+{      lexInteger: FCommandStack.AddOpValue(opcPush, FStringToken, FIntegerToken);
+      lexFloat:   FCommandStack.AddOpValue(opcPush, FStringToken, FFloatToken);
+      lexString:  FCommandStack.AddOpValue(opcPush, FStringToken, FStringToken);}
+
+      lexPlus: begin
+        ParsePriority(priAddOp, True);
+{        FCommandStack.AddOpArg2(opcInvokeDirect, FCommandStack.AddConst(StatementBuiltinOpName[bioAdd], StatementBuiltinOpName[bioAdd], False), 2); // 2 arg to unary}
+        Exit;
+      end;
+
+      lexMinus: begin
+        // go back on the scope stack to put the other parameter for minus
+        // in the scope of the expression
+//        PopUntil(RootScope);
+
+        // parse the second operand and add the instruction
+//        ParseFactor(True);
+        ParsePriority(priAddOp, True);
+{        FCommandStack.AddOpArg2(opcInvokeDirect, FCommandStack.AddConst(StatementBuiltinOpName[bioSubtract], StatementBuiltinOpName[bioSubtract], False), 2); // 2 arg to unary}
+        Exit; // musn't skip token again
+      end;
+
+      lexColon: begin // check if it is "IF" op
+{        if not FInsideIF then
+          Error(sExpectedIdentifier, [Position]);
+        FInsideIF:=False;}
+        ParseFactor(True);
+      end;
+
+{      lexAsterisk,
+      lexQuestionMark: Exit;}
+
+      lexLParen: begin
+        ParsePriority(priAssign, True);
+        ExpectToken(lexRParen);
+      end;
+    else
+      Error(sExpectedIdentifier, [Position]);
+    end;
+    NextToken;
+  end;
+
+{const
+  BuiltinOpMap: Array[TLexicalToken] of TStatementBuiltinOp = (
+    // Bof, Eof, Ident, Integer, Float, String
+    TStatementBuiltinOp(-1), TStatementBuiltinOp(-1), TStatementBuiltinOp(-1), TStatementBuiltinOp(-1), TStatementBuiltinOp(-1), TStatementBuiltinOp(-1),
+    // Plus, Minus, Asterisk, Slash, QuestionMark
+    bioAdd, bioSubtract, bioMultiply, bioDivide, bioQuestionMark,
+    // EqualTo, NotEqual, LessThan, GreaterThan, LessEqual, GreaterEqual
+    bioEqualTo, bioNotEqual, bioLessThan, bioGreaterThan, bioLessEqual, bioGreaterEqual,
+    // LParen, RParen, LBracket, RBracket
+    TStatementBuiltinOp(-1), TStatementBuiltinOp(-1), TStatementBuiltinOp(-1), TStatementBuiltinOp(-1),
+    // Dot, Comma, Colon, Semicolon, Assign
+    TStatementBuiltinOp(-1), TStatementBuiltinOp(-1), TStatementBuiltinOp(-1), TStatementBuiltinOp(-1), TStatementBuiltinOp(-1),
+    // Not, And, Or, Xor
+    bioBooleanNOT, bioBooleanAND, bioBooleanOR, bioBooleanXOR
+  );
+  BuiltinPriority: Array[TStatementToken] of TPriority = (
+    // Bof, Eof, Ident, Integer, Float, String
+    priNon, priNon, priNon, priNon, priNon, priNon,
+    // Plus, Minus, Asterisk, Slash, QuestionMark
+    priAddOp, priAddOp, priMulOp, priMulOp, priCondOp,
+    // EqualTo, NotEqual, LessThan, GreaterThan, LessEqual, GreaterEqual
+    priRelOp, priRelOp, priRelOp, priRelOp, priRelOp, priRelOp,
+    // LParen, RParen, LBracket, RBracket
+    priNon, priNon, priNon, priNon,
+    // Dot, Comma, Colon, Semicolon, Assign
+    priDotOp, priNon, priNon, priNon, priAssign,
+    // Not, And, Or, Xor
+    priBoolOp, priBoolOp, priBoolOp, priBoolOp
+  );}
+var
+  operatorPriority: TLexicalPriority;
+//  builtinOp: TStatementBuiltinOp;
+  internalToken: TLexicalToken;
+  tokenPair: TLexicalToken;
+//label
+//  Identificator;
+begin
+  ParseFactor(Skip);
+
+{  while True do begin
+    operatorPriority:=BuiltinPriority[FCurrToken];
+    builtinOp:=BuiltinOpMap[FCurrToken];
+    internalToken:=IdentToToken;
+    if (operatorPriority = priNon) and (internalToken <> TStatementToken(-1)) then begin
+      case internalToken of
+        lexBooleanNot,
+        lexBooleanAnd,
+        lexBooleanOr,
+        lexBooleanXor: begin
+          operatorPriority:=BuiltinPriority[internalToken];
+          builtinOp:=BuiltinOpMap[internalToken];
+        end;
+      end;
+    end;
+    if operatorPriority <> priNon then begin
+//      if FCurrToken = lexIdent then
+//        goto Identificator;
+      if operatorPriority <= Priority then
+        Break;
+      // parse the second operand and other params as needed, add the instruction
+      if builtinOp = bioQuestionMark then begin
+        ParsePriority(priTop, True); // get first arg
+        ExpectToken(lexColon);
+        ParsePriority(priTop, True);
+        FCommandStack.AddOpArg2(opcInvokeDirect, FCommandStack.AddConst(StatementBuiltinOpName[builtinOp], StatementBuiltinOpName[builtinOp], False), 3); // 3 arguments to binary
+      end
+      else begin
+        ParsePriority(operatorPriority, True); // loop for other ops
+        FCommandStack.AddOpArg2(opcInvokeDirect, FCommandStack.AddConst(StatementBuiltinOpName[builtinOp], StatementBuiltinOpName[builtinOp], False), 2); // 2 arguments to binary
+      end;
+    end
+    else begin
+//      Identificator: // jump for ident
+      case FCurrToken of
+        lexLParen, lexLBracket: begin // method / procedure call / indexed property
+          tokenPair:=Succ(FCurrToken); // select the appropriate closing paranthesis/bracket
+//          ScopeStack.Push(RootScope); // the parameters/indexers will be put in the expression scope
+
+          // parse the parameters/indexers of the function/property
+          NextToken;
+          FCommandStack.AddOpArg(opcInvokeIndirect, ParseArgs(tokenPair));
+
+//          PopParamScope; // pop the scopes for the function
+          EatToken(tokenPair);
+        end;
+        lexDot: begin
+          // the next token must be an identifier
+          NextToken;
+
+          if FCurrToken = lexEof then
+            FStringToken:=''
+          else
+            ExpectToken(lexIdent);
+
+          // create a wrapper for the token; in case the token represents
+          // an indexed property or a method, put on the scope stack the
+          // scope of a new result wrapper for that token
+//          LGroup := nil;
+//          LOrder := 0;
+//          LWrapper := EnsureWrapper(FStringToken);
+//          if Supports(LWrapper, IGroup, LGroup) then
+//            LOrder := LGroup.Add(LWrapper);
+//          PushWrapperScope(LWrapper);
+
+          // add the program instruction for the identifier; in case we deal
+          // with an indexed property or a method, add code to
+          FCommandStack.AddOpValue(opcLookup, FStringToken, FStringToken);
+//          if Assigned(LGroup) then
+//            FCommandStack.AddOpValue(opLookupGroup, LOrder);
+          NextToken;
+        end;
+        lexIdent: begin // can consider handling custom operators here (lexIdent)
+          FCommandStack.AddOpValue(opcLookup, FStringToken, FStringToken);
+          NextToken;
+        end;
+      else
+        Break;
+      end;
+    end;
+  end;}
+end;
+
+function TXmlXPathPredicateExpression.IdentToToken: TLexicalToken;
+var
+  ident: String;
+begin
+  if FCurrToken <> lexIdent then
+    Exit(TLexicalToken(-1));
+
+  Result:=TLexicalToken(-1);
+{  ident:=LowerCase(FStringToken);
+  if ident = 'not' then
+    Result:=lexBooleanNot
+  else if ident = 'and' then
+    Result:=lexBooleanAnd
+  else if ident = 'or' then
+    Result:=lexBooleanOr
+  else if ident = 'xor' then
+    Result:=lexBooleanXor;
+  ident:='';}
+end;
+
+procedure TXmlXPathPredicateExpression.Error(const Msg: String);
+begin
+  Error(Msg, []);
+end;
+
+procedure TXmlXPathPredicateExpression.Error(const Msg: String; const Args: Array of const);
+begin
+  if Length(Args) = 0 then
+    raise EXmlXPathException.Create(Msg)
+  else
+    raise EXmlXPathException.CreateFmt(Msg, Args);
+end;
+
+function TXmlXPathPredicateExpression.Parse: TXmlNodeList;
+begin
+  Result:=TXmlNodeList.Create(False);
+  ParsePriority(priTop, True); // start compiling the expression
+  // check if the compilation ended correctly
+  if FCurrToken <> lexEof then
+    Error(sExpectedEOF, [Position]);
+end;
+
+{ TXmlXPathEvaluator }
+
+constructor TXmlXPathEvaluator.Create;
+begin
+  FExpression:='';
+  FExpressionPos:=0;
+  FNodeDelimiter:='/';
+end;
+
+procedure TXmlXPathEvaluator.GetChildNodes(List: TXMLNodeList; Node: TXMLNode; const Element: String; element_type: TXmlNodeType; Recurse: Boolean);
+var
+  matchAll: Boolean;
+  i: Integer;
+  nodeList: TXmlObjectList;
+  item: TObject;
+  child: TXmlNode;
+begin
+  matchAll:=(Element = '*');
+  if element_type = ntAttribute then
+    nodeList:=Node.AttributeList
+  else
+    nodeList:=Node.ChildNodes;
+
+  for i:=0 to nodeList.Count - 1 do begin
+    item:=nodeList.Items[i];
+    if (element_type = ntElement) and (matchAll or (TXmlNode(item).NodeName = Element)) then
+        List.Add(TXmlNode(item), TXmlNode(item).ParentNode)
+    else if (element_type = ntAttribute) and (matchAll or (TXmlAttribute(item).Name = Element)) and (List.IndexOf(Node) = -1) then
+      List.Add(Node, Node.ParentNode);
+
+    if Recurse and (element_type = ntElement) then begin
+      GetChildNodes(List, TXmlNode(item), Element, element_type, True);
+    end;
+  end;
+
+  // if recursion is on and we were iterating over attributes, we must also check child nodes
+  if Recurse and (element_type = ntAttribute) then begin
+    for i:=0 to Node.ChildNodes.Count - 1 do begin
+      child:=Node.ChildNodes.Get(i);
+      GetChildNodes(List, child, Element, element_type, True);
+    end;
+  end;
+end;
+
+procedure TXmlXPathEvaluator.EvaluateNode(List: TXMLNodeList; Node: TXmlNode; Element, Predicate: String; Flags: TXmlXPathSelectionFlags);
+var
+  temp_list: TXmlNodeList;
+  element_type: TXmlNodeType;
+begin
+  if Element = '.' then
+    List.Add(Node, Node.ParentNode)
+  else if Element = '..' then begin
+    if Assigned(Node.ParentNode) then
+      List.Add(Node.ParentNode, Node.ParentNode.ParentNode);
+  end
+  else begin
+    temp_list:=TXmlNodeList.Create(False);
+    temp_list.Document:=List.Document;
+    try
+      element_type:=ntElement;
+      if (Length(Element) > 0) and (Element[1] = '@') then begin
+        element_type:=ntAttribute;
+        Delete(Element, 1, 1);
+      end;
+      if Length(Element) > 0 then
+        GetChildNodes(temp_list, Node, Element, element_type, selScanTree in Flags)
+      else
+        temp_list.Add(Node, Node.ParentNode);
+
+      FilterNodes(temp_list, List, Predicate);
+    finally
+      temp_list.Free;
+    end;
+  end;
+end;
+
+procedure TXmlXPathEvaluator.EvaluatePart(SrcList, DestList: TXMLNodeList; const Element, Predicate: String; Flags: TXmlXPathSelectionFlags);
+var
+  i: Integer;
+begin
+  DestList.Clear;
+  for i:=0 to SrcList.Count - 1 do begin
+    EvaluateNode(DestList, SrcList.Get(i), Element, Predicate, Flags);
+  end;
+end;
+
+procedure TXmlXPathEvaluator.FilterByAttrib(SrcList, DestList: TXmlNodeList; const AttrName, AttrValue: String; const NotEQ: Boolean);
+var
+  Node: TXmlNode;
+  i: Integer;
+  matchAnyValue: Boolean;
+begin
+  matchAnyValue:=(AttrValue = '*');
+  for i:=0 to SrcList.Count - 1 do begin
+    Node:=SrcList.Get(i);
+    if (Node <> Nil) and (matchAnyValue or ((Node.HasAttribute(AttrName) and (Node.Attributes[AttrName] = AttrValue)) xor NotEQ)) then
+      DestList.Add(Node, Node.ParentNode);
+  end;
+end;
+
+procedure TXmlXPathEvaluator.FilterByChild(SrcList, DestList: TXmlNodeList; const ChildName, ChildValue: String);
+
+  function GetTextChild(Node: TXmlNode): TXmlNode;
+  var
+    i: Integer;
+  begin
+    Result:=Nil;
+    if Node = Nil then
+      Exit;
+    for i:=0 to Node.ChildNodes.Count - 1 do begin
+      if Node.ChildNodes.Get(i).NodeType = ntText then begin
+        Result:=Node.ChildNodes.Get(i);
+        Break;
+      end;
+    end;
+  end;
+
+var
+  Node: TXmlNode;
+  i: Integer;
+  matchAnyValue: Boolean;
+begin
+  matchAnyValue:=(childValue = '*');
+  for i:=0 to SrcList.Count - 1 do begin
+    Node:=SrcList.Get(i).FindNode(childName);
+    if Node <> Nil then begin
+      if matchAnyValue then
+        DestList.Add(Node, Node.ParentNode) // List.Get(i)
+      else begin
+        Node:=GetTextChild(Node);
+        if Assigned(Node) and (Node.NodeValue = ChildValue) then
+          DestList.Add(Node, Node.ParentNode); // List.Get(i)
+      end;
+    end;
+  end;
+end;
+
+procedure TXmlXPathEvaluator.FilterByFunction(SrcList, DestList: TXmlNodeList; ChildName, ChildValue: String);
+var
+  Node: TXmlNode;
+  i: Integer;
+  code: Integer;
+  idx: Integer;
+begin
+  Node:=Nil;
+  ChildName:=LowerCase(ChildName);
+  if ChildName = 'first()' then
+    Node:=SrcList.FirstChild
+  else if ChildName = 'last()' then
+    Node:=SrcList.LastChild;
+
+  if Length(ChildValue) > 0 then begin // get index
+    Val(ChildValue, idx, code);
+    if code = 0 then begin // [n]
+      i:=-1;
+      if Node <> Nil then begin
+        i:=Node.Index;
+        Inc(i, idx);
+      end;
+
+      if (i < 0) or (i >= SrcList.Count) then
+        raise EXmlXPathException.CreateFmt('Invalid predicate index [%s]', [ChildName + ChildValue]);
+
+      Node:=Node.ParentNode.ChildNodes.Get(i);
+    end
+    else
+      raise EXmlXPathException.CreateFmt('Unsupported predicate expression [%s]', [ChildName + ChildValue]);
+  end;
+
+  if Node <> Nil then
+    DestList.Add(Node, Node.ParentNode); // List.Get(i)
+end;
+
+procedure TXmlXPathEvaluator.FilterNodes(SrcList, DestList: TXMLNodeList; Predicate: String);
+
+//  function isExpression(const Expression: String): Boolean;
+//  var
+//  begin
+//    while True do begin
+//      if CharInSet(P^, ['a'..'z', 'A'..'Z', '_', '.', '+', '-', '*']) and (P^ <> #0) then
+//        Inc(P);
+//    end;
+//  end;
+
+  procedure Error;
+  begin
+    raise EXmlXPathException.CreateFmt('Unsupported operator [%s]', [Predicate]);
+  end;
+
+var
+  code: Integer;
+  idx: Integer;
+  left, op, right: String;
+  is_attrib: Boolean;
+  Node: TXmlNode;
+//  P, S: PChar;
+begin
+  if Length(Predicate) = 0 then
+    DestList.Add(SrcList)
+  else begin
+    Val(Predicate, idx, code);
+    if code = 0 then begin // [n]
+      if (idx <= 0) or (idx > SrcList.Count) then
+        raise EXmlXPathException.CreateFmt('Invalid predicate index [%s]', [Predicate]);
+
+      Node:=SrcList.Get(idx - 1);
+      DestList.Add(Node, Node.ParentNode);
+    end
+    else if (Length(Predicate) > 0) then begin
+// xpath extensible test examples
+// https://www.mimuw.edu.pl/~czarnik/zajecia/xml11/lab07.html
+// https://www.w3.org/TR/1999/REC-xpath-19991116/#exprlex
+// https://docs.oracle.com/javase/tutorial/jaxp/xslt/xpath.html
+
+// lines commented below are for TXmlXPathPredicateExpression
+//      P:=PChar(Expression);
+//      S:=P;
+//      while True do begin
+//        SplitExpression(Predicate, left, op, right);
+//        if Length(left) = 0 then // no more expression text to be evaluated
+//          Break;
+//
+//          Predicate:='';
+//      end;
+
+      is_attrib:=False;
+      SplitExpression(Predicate, left, op, right);
+      if Predicate[1] = '@' then begin
+        is_attrib:=True;
+        Delete(left, 1, 1);
+      end;
+      //
+      if not is_attrib then begin
+        if Pos('()', left) > 0 then // [internal function]
+          FilterByFunction(SrcList, DestList, left, op + right)
+        else if Length(op) = 0 then // [node]
+          FilterByChild(SrcList, DestList, left, '*')
+        else if (Length(op) > 0) and (op = '=') then // [node='test']
+          FilterByChild(SrcList, DestList, left, right)
+        else
+          Error;
+      end
+      else begin
+        if Length(op) = 0 then // [@attrib]
+          FilterByAttrib(SrcList, DestList, left, '*', False)
+        else if (Length(op) > 0) and ((op = '=') or (op = '!=')) then // [@attrib='x']
+          FilterByAttrib(SrcList, DestList, left, right, (op = '!='))
+        else
+          Error;
+      end;
+    end;
+  end;
+end;
+
+function TXmlXPathEvaluator.GetNextExpressionPart(var Element, Predicate: String; var Flags: TXmlXPathSelectionFlags): Boolean;
+var
+  endElement: Integer;
+  pEndPredicate: Integer;
+  pPredicate: Integer;
+begin
+  if FExpressionPos > Length(FExpression) then
+    Result:=False
+  else begin
+    Flags:=[];
+    if FExpression[FExpressionPos] = FNodeDelimiter then begin
+      Inc(FExpressionPos); // initial '/' was already taken into account in Evaluate
+      if FExpression[FExpressionPos] = FNodeDelimiter then begin
+        Inc(FExpressionPos);
+        Include(Flags, selScanTree);
+      end;
+    end;
+    endElement:=PosEx(FNodeDelimiter, FExpression, FExpressionPos);
+    if endElement = 0 then
+      endElement:=Length(FExpression) + 1;
+    Element:=Copy(FExpression, FExpressionPos, endElement - FExpressionPos);
+    FExpressionPos:=endElement;
+    if Element = '' then
+      raise EXmlXPathException.CreateFmt('Empty element at position %d', [FExpressionPos]);
+    pPredicate:=Pos('[', Element);
+    if pPredicate = 0 then begin
+      if Pos(']', Element) > 0 then
+        raise EXmlXPathException.CreateFmt('Invalid syntax at position %d', [Pos(']', Element)]);
+      Predicate:='';
+    end
+    else begin
+      if Element[Length(Element)] <> ']' then
+        raise EXmlXPathException.CreateFmt('Invalid syntax at position %d', [FExpressionPos + Length(Element) - 1]);
+      pEndPredicate:=Pos(']', Element);
+      if pEndPredicate < Length(Element) then begin
+        //extract only the first filter
+        Dec(FExpressionPos, Length(Element) - pEndPredicate);
+        Element:=Copy(Element, 1, pEndPredicate);
+      end;
+      Predicate:=Copy(Element, pPredicate + 1, Length(Element) - pPredicate - 1);
+      Delete(Element, pPredicate, Length(Element)- pPredicate + 1);
+    end;
+    Result:=True;
+  end;
+end;
+
+procedure TXmlXPathEvaluator.SplitExpression(const Predicate: String; var left, op, right: String);
+var
+  pOp, pOpLen: integer;
+begin
+  pOp:=Pos('=', Predicate);
+  if pOp = 0 then begin
+    pOp:=Pos('-', Predicate);
+    if pOp = 0 then begin
+      pOp:=Pos('+', Predicate);
+      if pOp = 0 then begin
+        left:=Predicate;
+        op:='';
+        right:='';
+        Exit;
+      end;
+    end;
+  end;
+
+  // split expression
+  pOpLen:=1;
+  if (pOp > 1) and (Predicate[pOp - 1] = '!') then begin // != operator ???
+    Inc(pOpLen);
+    Dec(pOp);
+  end;
+
+  left:=Trim(Copy(Predicate, 1, pOp - 1));
+  // op := predicate[pOp];
+  op:=Copy(Predicate, pOp, pOpLen);
+  right:=Trim(Copy(Predicate, pOp + pOpLen, Length(Predicate)));
+  if ((right[1] = '''') and (right[Length(right)] = '''')) or ((right[1] = '"') and (right[Length(right)] = '"')) then
+    right:=Copy(right, 2, Length(right) - 2);
+end;
+
+function TXmlXPathEvaluator.Evaluate(RootNode: TXmlNode; const Expression: String; const NodeDelimiter: Char = '/'): TXmlNodeList;
+var
+  element, predicate: String;
+  flags: TXmlXPathSelectionFlags;
+  list: TXmlNodeList;
+begin
+  Result:=TXmlNodeList.Create(False);
+  Result.Document:=RootNode.Document;
+
+  FExpression := Expression;
+  FNodeDelimiter := NodeDelimiter;
+  FExpressionPos := 1;
+
+  if Length(Expression) > 0 then begin
+    if Expression[1] <> FNodeDelimiter then
+      Result.Add(RootNode, RootNode.ParentNode)
+    else if (RootNode.ParentNode <> Nil) and (RootNode.ParentNode = RootNode.Document.Root) then // already at root
+      Result.Add(RootNode, RootNode.ParentNode)
+    else
+      Result.Add(RootNode.Document.DocumentElement, RootNode.Document.DocumentElement.ParentNode);
+
+    while GetNextExpressionPart(element, predicate, flags) do begin
+      list:=Result;
+      Result:=TXmlNodeList.Create(False);
+      Result.Document:=list.Document;
+      try
+        EvaluatePart(list, Result, element, predicate, flags);
+      finally
+        list.Free;
+      end;
+    end;
+  end;
+end;
 
 { TVerySimpleXml }
 
@@ -489,7 +1849,7 @@ begin
     if wasRoot then begin
       if Root.ChildNodes.Count > 0 then begin
         for Child in Root.ChildNodes do begin
-          if Child.NodeType = ntElement then begin
+          if TXmlNode(Child).NodeType = ntElement then begin
             FDocumentElement := Child;
             Exit;
           end;
@@ -539,6 +1899,7 @@ begin
   Options := [doNodeAutoIndent, doWriteBOM{, doCaseInsensitive}];
   LineBreak := sLineBreak;
   XmlEscapeProcedure := Nil;
+  XPathDelimiter := '/';
   CreateHeaderNode;
 end;
 
@@ -657,22 +2018,6 @@ begin
   finally
     Stream.Free;
   end;
-end;
-
-procedure TXmlVerySimple.Compose(Writer: TStreamWriter);
-var
-  Child: TXmlNode;
-begin
-  if doCompact in Options then begin
-    Writer.NewLine := '';
-    LineBreak := '';
-  end
-  else
-    Writer.NewLine := LineBreak;
-
-  SkipIndent := False;
-  for Child in Root.ChildNodes do
-    Walk(Writer, '', Child);
 end;
 
 function TXmlVerySimple.LoadFromFile(const FileName: String; BufferSize: Integer = 4096): TXmlVerySimple;
@@ -822,6 +2167,35 @@ begin
 {$ENDIF}
 end;
 
+function TXmlVerySimple.SelectNode(const XPathExpression: String; RootNode: TXmlNode = Nil): TXmlNode;
+var
+  list: TXmlNodeList;
+begin
+  Result:=Nil;
+  list:=SelectNodes(XPathExpression, RootNode);
+  try
+    if list.Count > 0 then
+      Result:=list.Get(0);
+  finally
+    list.Free;
+  end;
+end;
+
+function TXmlVerySimple.SelectNodes(const XPathExpression: String; RootNode: TXmlNode = Nil): TXmlNodeList;
+var
+  xPath: TXmlXPathEvaluator;
+//  list: TXmlNodeList;
+begin
+  if RootNode = Nil then
+    RootNode:=Self.Root;
+
+  xPath:=TXmlXPathEvaluator.Create;
+  try
+    Result:=xPath.Evaluate(RootNode, XPathExpression, XPathDelimiter);
+  finally
+    FreeAndNil(xPath);
+  end;
+end;
 
 procedure TXmlVerySimple.ParseText(const Line: String; Parent: TXmlNode);
 var
@@ -1071,7 +2445,7 @@ begin
   end;
 end;
 
-function TXmlVerySimple.SaveToStream(const Stream: TStream): TXmlVerySimple;
+function TXmlVerySimple.SaveToStream(const Stream: TStream; const RootNode: TXmlNode = Nil): TXmlVerySimple;
 var
   Writer: TStreamWriter;
 begin
@@ -1082,7 +2456,10 @@ begin
   else
     Writer := TStreamWriter.Create(Stream, TEncoding.ANSI, (doWriteBOM in Options));
   try
-    Compose(Writer);
+    if RootNode = Nil then
+      Root.Compose(Writer, Root)
+    else
+      RootNode.Compose(Writer, RootNode);
   finally
     Writer.Free;
   end;
@@ -1192,9 +2569,9 @@ var
   Stream: TStringStream;
   utf8: UTF8String;
 begin
-  utf8:=Value;
+  utf8:=UTF8Encode(Value);
   try
-    Stream := TStringStream.Create(utf8, TEncoding.UTF8);
+    Stream := TStringStream.Create(UTF8ToString(utf8), TEncoding.UTF8);
     try
   //    Stream.WriteString(Value);
     {$IFDEF LOGGING}
@@ -1213,109 +2590,6 @@ begin
     utf8:='';
   end;
 end;
-
-procedure TXmlVerySimple.Walk(Writer: TStreamWriter; const PrefixNode: String; Node: TXmlNode);
-var
-  Child: TXmlNode;
-  Line: String;
-  Indent: String;
-begin
-  if (Node = Root.ChildNodes.First) or (SkipIndent) then begin
-    Line := '<';
-    SkipIndent := False;
-  end
-  else
-    Line := LineBreak + PrefixNode + '<';
-
-  case Node.NodeType of
-    ntComment:
-      begin
-        Writer.Write(Line + '!--' + Node.Text + '-->');
-        Exit;
-      end;
-    ntDocType:
-      begin
-        Writer.Write(Line + '!DOCTYPE ' + Node.Text + '>');
-        Exit;
-      end;
-    ntCData:
-      begin
-        Writer.Write('<![CDATA[' + Node.Text + ']]>');
-        Exit;
-      end;
-    ntText:
-      begin
-        Writer.Write(Node.Text);
-        SkipIndent := True;
-        Exit;
-      end;
-    ntProcessingInstr:
-      begin
-        if Node.AttributeList.Count > 0 then
-          Line := Line + '?' + Trim(Node.Name) + ' ' + Trim(Node.AttributeList.AsString) + '?>'
-        else
-          Line := Line + '?' + Node.Text + '?>';
-        if Assigned(XmlEscapeProcedure) then
-          XmlEscapeProcedure(Line);
-        Writer.Write(Line);
-        Exit;
-      end;
-    ntXmlDecl:
-      begin
-        if doSkipHeader in Options then
-          Exit;
-        if Node.AttributeList.Count > 0 then
-          Line := Line + '?' + Trim(Node.Name) + ' ' + Trim(Node.AttributeList.AsString) + '?>'
-        else
-          Line := Line + '?' + Node.Text + '?>';
-        if Assigned(XmlEscapeProcedure) then
-          XmlEscapeProcedure(Line);
-        Writer.Write(Line);
-        Exit;
-      end;
-  end;
-
-  Line := Line + Trim(Node.NameWithPrefix);
-  if Node.AttributeList.Count > 0 then
-    Line := Line + ' ' + Trim(Node.AttributeList.AsString);
-
-  // Self closing tags
-  if (Node.Text = '') and (not Node.HasChildNodes) then begin
-    Writer.Write(Line + '/>');
-    Exit;
-  end;
-
-  Line := Line + '>';
-  if Node.Text <> '' then begin
-    Line := Line + Escape(Node.Text);
-    if Node.HasChildNodes then
-      SkipIndent := True;
-  end;
-
-  if Assigned(XmlEscapeProcedure) then
-    XmlEscapeProcedure(Line);
-
-  Writer.Write(Line);
-
-  // Set indent for child nodes
-  if (doCompact in Options) or (doCompactWithBreakes in Options) then
-    Indent := ''
-  else
-    Indent := PrefixNode + IfThen(GetNodeAutoIndent, NodeIndentStr);
-
-  // Process child nodes
-  for Child in Node.ChildNodes do
-    Walk(Writer, Indent, Child);
-
-  // If node has child nodes and last child node is not a text node then set indent for closing tag
-  if (Node.HasChildNodes) and (not SkipIndent) then
-    Indent := LineBreak + PrefixNode
-  else
-    Indent := '';
-
-  Writer.Write(Indent + '</' + Trim(Node.NameWithPrefix) + '>');
-end;
-
 
 class function TXmlVerySimple.Escape(const Value: String): String;
 begin
@@ -1445,16 +2719,58 @@ begin
 end;
 
 procedure TXmlNode.Assign(const Node: TXmlNode);
-var
-  Attribute: TXmlAttribute;
 begin
   NodeName :=Node.NodeName;
   NodeType :=Node.NodeType;
   NodeValue:=Node.NodeValue;
   UserData :=Node.UserData;
-  for Attribute in Node.AttributeList do // add all attributes to node
-    SetAttribute(Attribute.Name, Attribute.Value);
+  AssignAttributes(Node);
   AddNodes(Node);
+end;
+
+procedure TXmlNode.AssignAttributes(const Node: TXmlNode; const AddNotExistingOnly: Boolean = False);
+var
+  Attribute: TXmlAttribute;
+begin
+  for Attribute in Node.AttributeList do begin // add attributes to node
+    if AddNotExistingOnly and not HasAttribute(Attribute.Name) then
+      SetAttribute(Attribute.Name, Attribute.Value)
+    else if not AddNotExistingOnly then
+      SetAttribute(Attribute.Name, Attribute.Value); // all
+  end;
+end;
+
+function TXmlNode.AsString: String;
+var
+  Stream: TStringStream;
+  write_bom: Boolean;
+begin
+  if not Assigned(FDocument) then begin
+    Stream := TStringStream.Create('', TEncoding.UTF8);
+    try
+      Result := Stream.DataString;
+    finally
+      Stream.Free;
+    end;
+  end
+  else begin
+    if CompareText(FDocument.Encoding, 'utf-8') = 0 then
+      Stream := TStringStream.Create('', TEncoding.UTF8)
+    else if CompareText(FDocument.Encoding, 'windows-1250') = 0 then
+      Stream := TStringStream.Create('', TEncoding.GetEncoding(1250))
+    else
+      Stream := TStringStream.Create('', TEncoding.ANSI);
+    write_bom:=(doWriteBOM in FDocument.Options);
+    FDocument.Options:=FDocument.Options - [doWriteBOM];
+    try
+      FDocument.SaveToStream(Stream, Self);
+      Result := Stream.DataString;
+    finally
+      Stream.Free;
+      if write_bom then
+        FDocument.Options:=FDocument.Options + [doWriteBOM];
+    end;
+  end;
 end;
 
 class procedure TXmlNode.GetNameAndPrefix(const Value: String; var Name, Prefix: String);
@@ -1664,6 +2980,17 @@ begin
   Result := ChildNodes.First;
 end;
 
+function TXmlNode.FirstChild(const Name: String): TXmlNode;
+begin
+  if Length(Name) > 0 then begin
+    Result := FirstChild;
+    if not Self.IsSame(Result.NodeName, Name) then
+      Result := Nil;
+  end
+  else
+    Result:=FirstChild;
+end;
+
 function TXmlNode.GetAttr(const AttrName: String): String;
 var
   Attribute: TXmlAttribute;
@@ -1742,6 +3069,17 @@ begin
     Result := NIL;
 end;
 
+function TXmlNode.LastChild(const Name: String): TXmlNode;
+begin
+  if Length(Name) > 0 then begin
+    Result := LastChild;
+    if not Self.IsSame(Result.NodeName, Name) then
+      Result := Nil;
+  end
+  else
+    Result:=LastChild;
+end;
+
 function TXmlNode.PreviousSibling: TXmlNode;
 begin
 //  if not Assigned(ParentNode) then
@@ -1797,7 +3135,181 @@ begin
   Result := Self;
 end;
 
+procedure TXmlNode.Compose(Writer: TStreamWriter; RootNode: TXmlNode);
+var
+  Child: TXmlNode;
+begin
+  SkipIndent := False;
+  if Assigned(FDocument) then begin
+    if doCompact in FDocument.Options then begin
+      Writer.NewLine := '';
+      LineBreak := '';
+    end
+    else begin
+      Writer.NewLine := FDocument.LineBreak;
+      LineBreak := FDocument.LineBreak;
+    end;
+
+    if RootNode = Nil then
+      RootNode:= FDocument.Root;
+  end
+  else begin
+    Writer.NewLine := #13#10; // Windows CRLF
+    LineBreak := #13#10;
+
+    if RootNode = Nil then
+      RootNode:= Self;
+  end;
+
+  for Child in RootNode.ChildNodes do
+    Walk(Writer, '', Child);
+end;
+
+procedure TXmlNode.Walk(Writer: TStreamWriter; const PrefixNode: String; Node: TXmlNode);
+var
+  Child: TXmlNode;
+  Line: String;
+  Indent: String;
+begin
+  if (Assigned(FDocument) and (Node = FDocument.Root.ChildNodes.First)){ or ((Node.ParentNode <> Nil) and (Node = Node.ParentNode.ChildNodes.First))} or SkipIndent then begin
+    Line := '<';
+    SkipIndent := False;
+  end
+  else
+    Line := LineBreak + PrefixNode + '<';
+
+  case Node.NodeType of
+    ntComment: begin
+      Writer.Write(Line + '!--' + Node.Text + '-->');
+      Exit;
+    end;
+    ntDocType: begin
+      Writer.Write(Line + '!DOCTYPE ' + Node.Text + '>');
+      Exit;
+    end;
+    ntCData: begin
+      Writer.Write('<![CDATA[' + Node.Text + ']]>');
+      Exit;
+    end;
+    ntText: begin
+      Writer.Write(Node.Text);
+      SkipIndent := True;
+      Exit;
+    end;
+    ntProcessingInstr: begin
+      if Node.AttributeList.Count > 0 then
+        Line := Line + '?' + Trim(Node.Name) + ' ' + Trim(Node.AttributeList.AsString) + '?>'
+      else
+        Line := Line + '?' + Node.Text + '?>';
+      if Assigned(FDocument) and Assigned(FDocument.XmlEscapeProcedure) then
+        FDocument.XmlEscapeProcedure(Line);
+      Writer.Write(Line);
+      Exit;
+    end;
+    ntXmlDecl: begin
+      if Assigned(FDocument) and (doSkipHeader in FDocument.Options) then
+        Exit;
+      if Node.AttributeList.Count > 0 then
+        Line := Line + '?' + Trim(Node.Name) + ' ' + Trim(Node.AttributeList.AsString) + '?>'
+      else
+        Line := Line + '?' + Node.Text + '?>';
+      if Assigned(FDocument) and Assigned(FDocument.XmlEscapeProcedure) then
+        FDocument.XmlEscapeProcedure(Line);
+      Writer.Write(Line);
+      Exit;
+    end;
+  end;
+
+  Line := Line + Trim(Node.NameWithPrefix);
+  if Node.AttributeList.Count > 0 then
+    Line := Line + ' ' + Trim(Node.AttributeList.AsString);
+
+  // Self closing tags
+  if (Length(Node.Text) = 0) and not Node.HasChildNodes then begin
+    Writer.Write(Line + '/>');
+    Exit;
+  end;
+
+  Line := Line + '>';
+  if Length(Node.Text) > 0 then begin
+    Line := Line + TXmlAttribute.Escape(Node.Text);
+    if Node.HasChildNodes then
+      SkipIndent := True;
+  end;
+
+  if Assigned(FDocument) and Assigned(FDocument.XmlEscapeProcedure) then
+    FDocument.XmlEscapeProcedure(Line);
+
+  Writer.Write(Line);
+
+  // Set indent for child nodes
+  if Assigned(FDocument) then begin
+    if (doCompact in FDocument.Options) or (doCompactWithBreakes in FDocument.Options) then
+      Indent := ''
+    else
+      Indent := PrefixNode + IfThen(FDocument.GetNodeAutoIndent, FDocument.NodeIndentStr);
+  end
+  else begin
+    Indent := '';
+  end;
+
+  // Process child nodes
+  for Child in Node.ChildNodes do
+    Walk(Writer, Indent, Child);
+
+  // If node has child nodes and last child node is not a text node then set indent for closing tag
+  if (Node.HasChildNodes) and not SkipIndent then
+    Indent := LineBreak + PrefixNode
+  else
+    Indent := '';
+
+  Writer.Write(Indent + '</' + Trim(Node.NameWithPrefix) + '>');
+end;
+
+{ TXmlAttributeEnumerator }
+
+constructor TXmlAttributeEnumerator.Create(List: TXmlAttributeList);
+begin
+  FAttributeList:=List;
+  FIndex:=-1;
+end;
+
+function TXmlAttributeEnumerator.GetCurrent: TXmlAttribute;
+begin
+  Result := TXmlAttribute(FAttributeList.Items[FIndex]);
+end;
+
+function TXmlAttributeEnumerator.MoveNext: Boolean;
+begin
+  Result := FIndex < (FAttributeList.Count - 1);
+  if Result then
+    Inc(FIndex);
+end;
+
 { TXmlAttributeList }
+
+function TXmlAttributeList.First: TXmlAttribute;
+begin
+  try
+    Result := TXmlAttribute(inherited First);
+  except
+    Result := Nil;
+  end;
+end;
+
+function TXmlAttributeList.Last: TXmlAttribute;
+begin
+  try
+    Result := TXmlAttribute(inherited Last);
+  except
+    Result := Nil;
+  end;
+end;
+
+function TXmlAttributeList.GetEnumerator: TXmlAttributeEnumerator;
+begin
+  Result := TXmlAttributeEnumerator.Create(Self);
+end;
 
 function TXmlAttributeList.Add(const Name: String): TXmlAttribute;
 begin
@@ -1857,7 +3369,50 @@ begin
   Result := Assigned(Find(AttrName));
 end;
 
+{ TXmlNodeEnumerator }
+
+constructor TXmlNodeEnumerator.Create(List: TXmlNodeList);
+begin
+  FNodeList:=List;
+  FIndex:=-1;
+end;
+
+function TXmlNodeEnumerator.GetCurrent: TXmlNode;
+begin
+  Result := TXmlNode(FNodeList.Items[FIndex]);
+end;
+
+function TXmlNodeEnumerator.MoveNext: Boolean;
+begin
+  Result := FIndex < (FNodeList.Count - 1);
+  if Result then
+    Inc(FIndex);
+end;
+
 { TXmlNodeList }
+
+function TXmlNodeList.First: TXmlNode;
+begin
+  try
+    Result := TXmlNode(inherited First);
+  except
+    Result := Nil;
+  end;
+end;
+
+function TXmlNodeList.Last: TXmlNode;
+begin
+  try
+    Result := TXmlNode(inherited Last);
+  except
+    Result := Nil;
+  end;
+end;
+
+function TXmlNodeList.GetEnumerator: TXmlNodeEnumerator;
+begin
+  Result := TXmlNodeEnumerator.Create(Self);
+end;
 
 function TXmlNodeList.Add(Value: TXmlNode): Integer;
 var
@@ -1876,6 +3431,12 @@ begin
   Value.FIndex := Index + 1;
 end;
 
+function TXmlNodeList.Add(Value: TXmlNode; ParentNode: TXmlNode): Integer;
+begin
+  Parent:=ParentNode;
+  Result:=Add(Value);
+end;
+
 function TXmlNodeList.Add(NodeType: TXmlNodeType = ntElement): TXmlNode;
 begin
   Result := TXmlNode.Create(NodeType);
@@ -1892,6 +3453,15 @@ function TXmlNodeList.Add(const Name: String; NodeType: TXmlNodeType): TXmlNode;
 begin
   Result := Add(NodeType);
   Result.Name := Name;
+end;
+
+procedure TXmlNodeList.Add(const List: TXmlNodeList);
+var
+  Node: TXmlNode;
+begin
+  for Node in List do begin // add all items to list
+    Self.Add(Node, Node.ParentNode);
+  end;
 end;
 
 function TXmlNodeList.CountNames(const Name: String; var NodeList: TXmlNodeList; const SearchWithoutPrefix: Boolean): Integer;
@@ -1969,12 +3539,17 @@ begin
   Result := First;
 end;
 
+function TXmlNodeList.LastChild: TXmlNode;
+begin
+  Result := Last;
+end;
+
 function TXmlNodeList.Get(Index: Integer): TXmlNode;
 begin
   if (Index < 0) or (Index >= Count) then
     Result := Nil
   else
-    Result := Items[Index];
+    Result := TXmlNode(Items[Index]);
 end;
 
 function TXmlNodeList.HasNode(const Name: String; NodeTypes: TXmlNodeTypes = [ntElement]): Boolean;
