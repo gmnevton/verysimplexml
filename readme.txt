@@ -21,5 +21,6 @@
 }
 {
   XSD schema support and some useful things - made by NevTon.
+  XPATH support made by NevTon.
   Portions copyright (C) 2015-2020 Grzegorz Molenda aka NevTon; ViTESOFT.net; <gmnevton@o2.pl>
 }
