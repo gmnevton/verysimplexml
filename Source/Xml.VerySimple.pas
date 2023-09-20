@@ -1,8 +1,8 @@
-{ VerySimpleXML v2.3.1 - a lightweight, one-unit, cross-platform XML reader/writer
+{ VerySimpleXML v2.4.0 - a lightweight, one-unit, cross-platform XML reader/writer
   for Delphi 2010-XE10.3 by Dennis Spreen
   http://blog.spreendigital.de/2011/11/10/verysimplexml-a-lightweight-delphi-xml-reader-and-writer/
 
-  (c) Copyrights 2011-2020 Dennis D. Spreen <dennis@spreendigital.de>
+  (c) Copyrights 2011-2023 Dennis D. Spreen <dennis@spreendigital.de>
   This unit is free and can be used for any needs. The introduction of
   any changes and the use of those changed library is permitted without
   limitations. Only requirement:
@@ -22,9 +22,9 @@
 {
   XSD schema support and some useful things - made by NevTon.
   XPATH support made by NevTon.
-  Portions copyright (C) 2015-2020 Grzegorz Molenda aka NevTon; ViTESOFT.net; <gmnevton@o2.pl>
+  Portions copyright (C) 2015-2023 Grzegorz Molenda aka NevTon; ViTESOFT.net; <gmnevton@o2.pl>
 }
-unit Xml.VerySimple;
+unit XML.VerySimple;
 
 interface
 
@@ -228,7 +228,9 @@ type
     ///	<summary> Returns True if the attribute exists </summary>
     function HasAttribute(const AttrName: String): Boolean; virtual;
     ///	<summary> Returns True if a child node with that name exits </summary>
-    function HasChild(const Name: String; NodeTypes: TXmlNodeTypes = [ntElement]): Boolean; virtual;
+    function HasChild(const Name: String; NodeTypes: TXmlNodeTypes = [ntElement]): Boolean; overload; virtual;
+    function HasChild(const Name: String; out Node: TXmlNode; NodeTypes: TXmlNodeTypes = [ntElement]): Boolean; overload; virtual;
+    function HasChild(const Name: String; out NodeList: TXmlNodeList; NodeTypes: TXmlNodeTypes = [ntElement]): Boolean; overload; virtual;
     ///	<summary> Add a child node with an optional NodeType (default: ntElement)</summary>
     function AddChild(const AName: String; ANodeType: TXmlNodeType = ntElement): TXmlNode; virtual;
     ///	<summary> Removes a child node</summary>
@@ -340,7 +342,9 @@ type
     // Loops trough childnodes with given Name
 //    procedure ScanNodes(const Name: String; CallBack: TXmlNodeCallBack);
     ///	<summary> Returns True if the list contains a node with the given name </summary>
-    function HasNode(const Name: String; NodeTypes: TXmlNodeTypes = [ntElement]): Boolean; virtual;
+    function HasNode(const Name: String; NodeTypes: TXmlNodeTypes = [ntElement]): Boolean; overload; virtual;
+    function HasNode(const Name: String; out Node: TXmlNode; NodeTypes: TXmlNodeTypes = [ntElement]): Boolean; overload; virtual;
+    function HasNode(const Name: String; out NodeList: TXmlNodeList; NodeTypes: TXmlNodeTypes = [ntElement]): Boolean; overload; virtual;
     ///	<summary> Returns the first child node, same as .First </summary>
     function FirstChild: TXmlNode; virtual;
     ///	<summary> Returns the last child node, same as .Last </summary>
@@ -437,6 +441,10 @@ type
     function SaveToFile(const FileName: String; const EscapeProcedure: TXmlEscapeProcedure): TXmlVerySimple; overload; virtual;
     ///	<summary> Saves the XML to a stream, the encoding is specified in the .Encoding property </summary>
     function SaveToStream(const Stream: TStream; const RootNode: TXmlNode = Nil): TXmlVerySimple; virtual;
+    ///	<summary> Remove style sheet for the document </summary>
+    procedure RemoveStyleSheet; virtual;
+    ///	<summary> Sets style sheet for the document </summary>
+    procedure SetStyleSheet(const Path: String); virtual;
     ///	<summary> A list of all root nodes of the document </summary>
     property ChildNodes: TXmlNodeList read GetChildNodes;
     ///	<summary> Returns the first element node </summary>
@@ -1895,6 +1903,7 @@ begin
   Root.NodeType := ntDocument;
   Root.ParentNode := Root;
   Root.Document := Self;
+  FDocumentElement:=NIL;
   NodeIndentStr := '  ';
   Options := [doNodeAutoIndent, doWriteBOM{, doCaseInsensitive}];
   LineBreak := sLineBreak;
@@ -1904,31 +1913,24 @@ begin
 end;
 
 procedure TXmlVerySimple.CreateHeaderNode;
+//var
+//  xmlDecl: TXmlNode;
 begin
-{$IFDEF LOGGING}
-  DebugOutputStrToFile('XmlVerySimple.txt', 'CreateHeaderNode - enter', True);
-{$ENDIF}
+  {$IFDEF LOGGING}DebugOutputStrToFile('XmlVerySimple.txt', 'CreateHeaderNode - enter', True);{$ENDIF}
   if Assigned(FHeader) then begin
-  {$IFDEF LOGGING}
-    DebugOutputStrToFile('XmlVerySimple.txt', 'CreateHeaderNode - exit', True);
-  {$ENDIF}
+    {$IFDEF LOGGING}DebugOutputStrToFile('XmlVerySimple.txt', 'CreateHeaderNode - exit', True);{$ENDIF}
     Exit;
   end;
-{$IFDEF LOGGING}
-  DebugOutputStrToFile('XmlVerySimple.txt', 'CreateHeaderNode - create <xml>', True);
-{$ENDIF}
-  FHeader := Root.ChildNodes.Insert('xml', 0, ntXmlDecl);
-{$IFDEF LOGGING}
-  DebugOutputStrToFile('XmlVerySimple.txt', 'CreateHeaderNode - set version', True);
-{$ENDIF}
+  {$IFDEF LOGGING}DebugOutputStrToFile('XmlVerySimple.txt', 'CreateHeaderNode - create <xml>', True);{$ENDIF}
+  FHeader := Root.AddChild('xml', ntXmlDecl);
+  //xmlDecl := FHeader.AddChild('xml', ntXmlDecl);
+  {$IFDEF LOGGING}DebugOutputStrToFile('XmlVerySimple.txt', 'CreateHeaderNode - set version', True);{$ENDIF}
   FHeader.Attributes['version'] := '1.0';  // Default XML version
-{$IFDEF LOGGING}
-  DebugOutputStrToFile('XmlVerySimple.txt', 'CreateHeaderNode - set encoding', True);
-{$ENDIF}
+  //xmlDecl.Attributes['version'] := '1.0';  // Default XML version
+  {$IFDEF LOGGING}DebugOutputStrToFile('XmlVerySimple.txt', 'CreateHeaderNode - set encoding', True);{$ENDIF}
   FHeader.Attributes['encoding'] := 'utf-8';
-{$IFDEF LOGGING}
-  DebugOutputStrToFile('XmlVerySimple.txt', 'CreateHeaderNode - leave', True);
-{$ENDIF}
+  //xmlDecl.Attributes['encoding'] := 'utf-8';
+  {$IFDEF LOGGING}DebugOutputStrToFile('XmlVerySimple.txt', 'CreateHeaderNode - leave', True);{$ENDIF}
 end;
 
 function TXmlVerySimple.CreateNode(const Name: String; NodeType: TXmlNodeType): TXmlNode;
@@ -2007,7 +2009,7 @@ function TXmlVerySimple.GetText: String;
 var
   Stream: TStringStream;
 begin
-  if CompareText(Encoding, 'utf-8') = 0 then
+  if (Length(Encoding) = 0) or (CompareText(Encoding, 'utf-8') = 0) then
     Stream := TStringStream.Create('', TEncoding.UTF8)
   else
     Stream := TStringStream.Create('', TEncoding.ANSI);
@@ -2367,7 +2369,8 @@ var
   Node: TXmlNode;
   ALine: String;
   CharPos: Integer;
-  Tag: String;
+  SingleChar: Char;
+  Tag, TagName: String;
 begin
 {$IFDEF LOGGING}
   DebugOutputStrToFile('XmlVerySimple.txt', 'ParseTag(2) - enter: ' + TagStr, True);
@@ -2406,8 +2409,18 @@ begin
   else
     Parent := Node;
 
-  CharPos := Pos(' ', Tag);
-  if CharPos <> 0 then begin // Tag may have attributes
+  // extract tag name
+  CharPos:=0;
+  TagName:='';
+  for SingleChar in Tag do begin
+    Inc(CharPos);
+    if AnsiStrScan(TXmlSpaces, SingleChar) <> Nil then begin
+      TagName := Copy(Tag, 1, CharPos - 1);
+      Break;
+    end;
+  end;
+
+  if Length(TagName) > 0 then begin // Tag may have attributes
     ALine := Tag;
     Delete(Tag, CharPos, Length(Tag));
     Delete(ALine, 1, CharPos);
@@ -2415,7 +2428,10 @@ begin
       ParseAttributes(ALine, Node.AttributeList);
   end;
 
-  Node.Name := Tag;
+  if Length(TagName) > 0 then
+    Node.Name := TagName
+  else
+    Node.Name := Tag;
 {$IFDEF LOGGING}
   DebugOutputStrToFile('XmlVerySimple.txt', 'ParseTag(2) - leave', True);
 {$ENDIF}
@@ -2446,24 +2462,57 @@ begin
 end;
 
 function TXmlVerySimple.SaveToStream(const Stream: TStream; const RootNode: TXmlNode = Nil): TXmlVerySimple;
+const
+  BufferSize: Integer = 1024 * 1024; // 1MB buffer, so writing from buffer to disk is less frequent
 var
   Writer: TStreamWriter;
 begin
-  if CompareText(Self.Encoding, 'utf-8') = 0 then
-    Writer := TStreamWriter.Create(Stream, TEncoding.UTF8, (doWriteBOM in Options))
+  if (Length(Encoding) = 0) or (CompareText(Self.Encoding, 'utf-8') = 0) then
+    Writer := TStreamWriter.Create(Stream, TEncoding.UTF8, (doWriteBOM in Options), BufferSize)
   else if CompareText(Encoding, 'windows-1250') = 0 then
-    Writer := TStreamWriter.Create(Stream, TEncoding.GetEncoding(1250), (doWriteBOM in Options))
+    Writer := TStreamWriter.Create(Stream, TEncoding.GetEncoding(1250), (doWriteBOM in Options), BufferSize)
   else
-    Writer := TStreamWriter.Create(Stream, TEncoding.ANSI, (doWriteBOM in Options));
+    Writer := TStreamWriter.Create(Stream, TEncoding.ANSI, (doWriteBOM in Options), BufferSize);
   try
-    if RootNode = Nil then
-      Root.Compose(Writer, Root)
+    Writer.AutoFlush := False; // save to stream only when buffer is full
+    if RootNode = Nil then begin
+      Root.Compose(Writer, Root);
+//      Root.Compose(Writer, Header); // save header first
+//      if Assigned(DocumentElement) then
+//        Root.Compose(Writer, DocumentElement); // save document
+    end
     else
       RootNode.Compose(Writer, RootNode);
   finally
     Writer.Free;
   end;
   Result := Self;
+end;
+
+procedure TXmlVerySimple.RemoveStyleSheet;
+var
+  Node: TXmlNode;
+begin
+  Node := Root.FindNode('xml-stylesheet', [ntProcessingInstr], [nsRecursive]);
+  if Assigned(Node) then
+    Header.RemoveChild(Node);
+end;
+
+procedure TXmlVerySimple.SetStyleSheet(const Path: String);
+var
+  Node: TXmlNode;
+begin
+//  Options:=Options + [doParseProcessingInstr];
+  Node := Root.FindNode('xml-stylesheet', [ntProcessingInstr], [nsRecursive]);
+  if Assigned(Node) then
+    Node.SetAttribute('href', ReplaceStr(Path, '\','/'))
+  else begin
+    if Assigned(DocumentElement) then
+      Node:=Root.InsertChildBefore(DocumentElement, 'xml-stylesheet', ntProcessingInstr)
+    else
+      Node:=Root.InsertChildAfter(Header, 'xml-stylesheet', ntProcessingInstr);
+    Node.SetAttribute('type', 'text/xsl').SetAttribute('href', ReplaceStr(Path, '\','/'));
+  end;
 end;
 
 procedure TXmlVerySimple.SetDocumentElement(Value: TXMlNode);
@@ -2754,7 +2803,7 @@ begin
     end;
   end
   else begin
-    if CompareText(FDocument.Encoding, 'utf-8') = 0 then
+    if (Length(FDocument.Encoding) = 0) or (CompareText(FDocument.Encoding, 'utf-8') = 0) then
       Stream := TStringStream.Create('', TEncoding.UTF8)
     else if CompareText(FDocument.Encoding, 'windows-1250') = 0 then
       Stream := TStringStream.Create('', TEncoding.GetEncoding(1250))
@@ -3017,6 +3066,16 @@ begin
   Result := ChildNodes.HasNode(Name, NodeTypes);
 end;
 
+function TXmlNode.HasChild(const Name: String; out Node: TXmlNode; NodeTypes: TXmlNodeTypes = [ntElement]): Boolean;
+begin
+  Result := ChildNodes.HasNode(Name, Node, NodeTypes);
+end;
+
+function TXmlNode.HasChild(const Name: String; out NodeList: TXmlNodeList; NodeTypes: TXmlNodeTypes = [ntElement]): Boolean;
+begin
+  Result := ChildNodes.HasNode(Name, NodeList, NodeTypes);
+end;
+
 function TXmlNode.HasChildNodes: Boolean;
 begin
   Result := (ChildNodes.Count > 0);
@@ -3160,6 +3219,9 @@ begin
     if RootNode = Nil then
       RootNode:= Self;
   end;
+
+//  if Assigned(Document.DocumentElement) and (RootNode = Document.DocumentElement) then
+//    Walk(Writer, '', RootNode);
 
   for Child in RootNode.ChildNodes do
     Walk(Writer, '', Child);
@@ -3555,6 +3617,22 @@ end;
 function TXmlNodeList.HasNode(const Name: String; NodeTypes: TXmlNodeTypes = [ntElement]): Boolean;
 begin
   Result := Assigned(Find(Name, NodeTypes));
+end;
+
+function TXmlNodeList.HasNode(const Name: String; out Node: TXmlNode; NodeTypes: TXmlNodeTypes = [ntElement]): Boolean;
+begin
+  Node := Find(Name, NodeTypes);
+  Result := Assigned(Node);
+end;
+
+function TXmlNodeList.HasNode(const Name: String; out NodeList: TXmlNodeList; NodeTypes: TXmlNodeTypes = [ntElement]): Boolean;
+begin
+  NodeList := FindNodes(Name, NodeTypes);
+  Result := (NodeList.Count > 0);
+  if not Result then begin
+    NodeList.Free;
+    NodeList:=Nil;
+  end;
 end;
 
 function TXmlNodeList.Insert(const Name: String; Position: Integer; NodeType: TXmlNodeType = ntElement): TXmlNode;
@@ -4038,6 +4116,7 @@ begin
         Self.FillBuffer;
         if Self.FBufferedData.Length = 0 then
           Break;
+        NewLineIndex := 0;
       end;
     end;
 
