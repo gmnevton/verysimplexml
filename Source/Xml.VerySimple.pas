@@ -1,8 +1,8 @@
-{ VerySimpleXML v2.4.0 - a lightweight, one-unit, cross-platform XML reader/writer
+{ VerySimpleXML v2.6.0 - a lightweight, one-unit, cross-platform XML reader/writer
   for Delphi 2010-XE10.3 by Dennis Spreen
   http://blog.spreendigital.de/2011/11/10/verysimplexml-a-lightweight-delphi-xml-reader-and-writer/
 
-  (c) Copyrights 2011-2023 Dennis D. Spreen <dennis@spreendigital.de>
+  (c) Copyrights 2011-2025 Dennis D. Spreen <dennis@spreendigital.de>
   This unit is free and can be used for any needs. The introduction of
   any changes and the use of those changed library is permitted without
   limitations. Only requirement:
@@ -22,7 +22,7 @@
 {
   XSD schema support and some useful things - made by NevTon.
   XPATH support made by NevTon.
-  Portions copyright (C) 2015-2023 Grzegorz Molenda aka NevTon; ViTESOFT.net; <gmnevton@o2.pl>
+  Portions copyright (C) 2015-2025 Grzegorz Molenda aka NevTon; ViTESOFT.net; <gmnevton@o2.pl>
 }
 unit XML.VerySimple;
 
@@ -49,8 +49,9 @@ const
   sExpectedIdentifier = 'Expected an identifier, number or string.' + sSourcePosition;
 
 type
-//  EXmlVerySimple = class(Exception);
-  EXmlXPathException = class(Exception);
+  EXmlVerySimple = class(Exception);
+  EXmlNodeException = class(EXmlVerySimple);
+  EXmlXPathException = class(EXmlVerySimple);
 
   TXmlVerySimple = class;
   TXmlNode = class;
@@ -60,7 +61,7 @@ type
   TXmlAttributeType = (atValue, atSingle);
   TXmlNodeSearchType = (nsRecursive, nsSearchWithoutPrefix);
   TXmlNodeSearchTypes = set of TXmlNodeSearchType;
-  TXmlOptions = set of (doNodeAutoIndent, doCompact, doCompactWithBreakes, doParseProcessingInstr, doPreserveWhiteSpace, doCaseInsensitive,
+  TXmlOptions = set of (doNodeAutoIndent, doSmartNodeAutoIndent, doCompact, doCompactWithBreakes, doParseProcessingInstr, doPreserveWhiteSpace, doCaseInsensitive,
     doSearchExcludeNamespacePrefix, doWriteBOM, doSkipHeader);
   TExtractTextOptions = set of (etoDeleteStopChar, etoStopString);
 
@@ -152,6 +153,7 @@ type
   end;
 
   TXmlNodeCallBack = reference to function(Node: TXmlNode): Boolean;
+  TXmlNodeDefinitionPart = (ndpFull, ndpOpen, ndpClose);
 
   TXmlNode = class(TObject)
   private
@@ -163,6 +165,7 @@ type
     FPrevSibling,           // link to the node's previous sibling or nil if it is the first node
     FNextSibling: TXmlNode; // link to the node's next sibling or nil if it is the last node
     SkipIndent: Boolean; // used internally to tighten the output of xml nodes to string representation
+    ParentIndentNode: TXmlNode;
     ///	<summary> LineBreak used for the xml output, default set to sLineBreak which is OS dependent </summary>
     LineBreak: String;
 
@@ -175,16 +178,17 @@ type
     function FindNodeRecursive(const Name, AttrName: String; NodeTypes: TXmlNodeTypes = [ntElement]; const SearchOptions: TXmlNodeSearchTypes = []): TXmlNode; overload; virtual;
     ///	<summary> Find a child node by name, attribute name and attribute value in tree </summary>
     function FindNodeRecursive(const Name, AttrName, AttrValue: String; NodeTypes: TXmlNodeTypes = [ntElement]; const SearchOptions: TXmlNodeSearchTypes = []): TXmlNode; overload; virtual;
-    ///	<summary> Return a list of child nodes with the given name and (optional) node types in tree </summary>
-//    function FindNodesRecursive(const Name: String; NodeTypes: TXmlNodeTypes = [ntElement]): TXmlNodeList; virtual;
   protected
     [Weak] FDocument: TXmlVerySimple;
 
     procedure SetDocument(Value: TXmlVerySimple);
     function GetAttr(const AttrName: String): String; virtual;
     procedure SetAttr(const AttrName: String; const AttrValue: String); virtual;
+    function GetNodeValue: String; virtual;
+    procedure SetNodeValue(const Value: String); virtual;
     procedure Compose(Writer: TStreamWriter; RootNode: TXmlNode); virtual;
-    procedure Walk(Writer: TStreamWriter; const PrefixNode: String; Node: TXmlNode); virtual;
+    function  ComposeNode(Writer: TStreamWriter; const WhichPart: TXmlNodeDefinitionPart): String; virtual;
+    procedure Walk(Writer: TStreamWriter; const PrefixNode: String; Node: TXmlNode; const WalkChildren: Boolean = True; const WhichPart: TXmlNodeDefinitionPart = ndpFull); virtual;
   public
     ///	<summary> All attributes of the node </summary>
     AttributeList: TXmlAttributeList;
@@ -207,8 +211,10 @@ type
     procedure Assign(const Node: TXmlNode); virtual;
     /// <summary> Assigns an existing XML node attributes to this </summary>
     procedure AssignAttributes(const Node: TXmlNode; const AddNotExistingOnly: Boolean = False); virtual;
-    ///	<summary> Gets text representation of current node </summary>
+    ///	<summary> Gets text representation of current node child nodes </summary>
     function AsString: String; virtual;
+    ///	<summary> Gets text representation of current node </summary>
+    function ToString(const WhichPart: TXmlNodeDefinitionPart): String; virtual;
     ///	<summary> Gets name and prefix (if available) from given value string </summary>
     class procedure GetNameAndPrefix(const Value: String; var Name, Prefix: String);
     ///	<summary> Clears the attributes, the text and all of its child nodes (but not the name) </summary>
@@ -252,7 +258,7 @@ type
     ///	<summary> Insert a child node after a specific node</summary>
     function InsertChildAfter(const AfterNode: TXmlNode; const NodeToInsert: TXmlNode): TXmlNode; overload; virtual;
     ///	<summary> Fluent interface for setting the text of the node </summary>
-    function SetText(const Value: String): TXmlNode; virtual;
+    //function SetText(const Value: String): TXmlNode; virtual;
     ///	<summary> Fluent interface for setting the node attribute given by attribute name and attribute value </summary>
     function SetAttribute(const AttrName, AttrValue: String): TXmlNode; virtual;
     ///	<summary> Returns first child or NIL if there aren't any child nodes </summary>
@@ -267,6 +273,8 @@ type
     function NextSibling: TXmlNode; overload; virtual;
     ///	<summary> Returns True if the node has at least one child node </summary>
     function HasChildNodes: Boolean; virtual;
+    ///	<summary> Returns True if the node has Text child node </summary>
+    function HasTextChildNode: Boolean; virtual;
     ///	<summary> Returns True if the node has a text content and no child nodes </summary>
     function IsTextElement: Boolean; virtual;
     ///	<summary> Fluent interface for setting the node type </summary>
@@ -283,8 +291,8 @@ type
     property Document: TXmlVerySimple read FDocument write SetDocument;
     ///	<summary> The node name, same as property Name </summary>
     property NodeName: String read FName write SetName;
-    ///	<summary> The node text, same as property Text </summary>
-    property NodeValue: String read Text write Text;
+    ///	<summary> The child node text if node has children and first child is text node </summary>
+    property NodeValue: String read GetNodeValue write SetNodeValue;
     ///	<summary> The node Level in tree </summary>
     property Level: Cardinal read FLevel;
     ///	<summary> The node Index in list </summary>
@@ -305,6 +313,8 @@ type
   TXmlNodeList = class(TXmlObjectList)
   private
     function IsSame(const Value1, Value2: String): Boolean;
+  protected
+    procedure FindNodesRecursive(const List: TXmlNodeList; const Name: String; NodeTypes: TXmlNodeTypes = [ntElement]; const SearchWithoutPrefix: Boolean = False); virtual;
   public
     ///	<summary> The parent node of the node list </summary>
     [Weak] Parent: TXmlNode;
@@ -379,7 +389,7 @@ type
     procedure ParseProcessingInstr(Reader: TXmlReader; var Parent: TXmlNode); virtual;
     procedure ParseCData(Reader: TXmlReader; var Parent: TXmlNode); virtual;
     procedure ParseText(const Line: String; Parent: TXmlNode); virtual;
-    function ParseTag(Reader: TXmlReader; ParseText: Boolean; var Parent: TXmlNode): TXmlNode; overload; virtual;
+    function ParseTag(Reader: TXmlReader; var Parent: TXmlNode): TXmlNode; overload; virtual;
     function ParseTag(const TagStr: String; var Parent: TXmlNode): TXmlNode; overload; virtual;
     procedure SetText(const Value: String); virtual;
     function GetText: String; virtual;
@@ -1588,8 +1598,8 @@ begin
         DestList.Add(Node, Node.ParentNode) // List.Get(i)
       else begin
         Node:=GetTextChild(Node);
-        if Assigned(Node) and (Node.NodeValue = ChildValue) then
-          DestList.Add(Node, Node.ParentNode); // List.Get(i)
+//        if Assigned(Node) and (Node.NodeValue = ChildValue) then
+//          DestList.Add(Node, Node.ParentNode); // List.Get(i)
       end;
     end;
   end;
@@ -2086,33 +2096,30 @@ begin
 {$ENDIF}
   while not Reader.EndOfStream do begin
     ALine := Reader.ReadText('<', [etoDeleteStopChar]);
-    if ALine <> '' then  // Check for text nodes
-    begin
+    if ALine <> '' then begin // Check for text nodes
       ParseText(Aline, Parent);
       if Reader.EndOfStream then  // if no chars available then exit
         Break;
     end;
     FirstChar := Reader.FirstChar;
-    if FirstChar = '!' then
+    if FirstChar = '!' then begin
       if Reader.IsUppercaseText('!--') then  // check for a comment node
         ParseComment(Reader, Parent)
-      else
-      if Reader.IsUppercaseText('!DOCTYPE') then // check for a doctype node
+      else if Reader.IsUppercaseText('!DOCTYPE') then // check for a doctype node
         ParseDocType(Reader, Parent)
-      else
-      if Reader.IsUppercaseText('![CDATA[') then // check for a cdata node
+      else if Reader.IsUppercaseText('![CDATA[') then // check for a cdata node
         ParseCData(Reader, Parent)
       else
-        ParseTag(Reader, False, Parent) // try to parse as tag
-    else // Check for XML header / processing instructions
-    if FirstChar = '?' then // could be header or processing instruction
-      ParseProcessingInstr(Reader, Parent)
-    else
-    if FirstChar <> '' then
-    begin // Parse a tag, the first tag in a document is the DocumentElement
-      Node := ParseTag(Reader, True, Parent);
-      if (not Assigned(FDocumentElement)) and (Parent = Root) then
-        FDocumentElement := Node;
+        ParseTag(Reader, Parent);
+    end     // try to parse as tag
+    else begin // Check for XML header / processing instructions
+      if FirstChar = '?' then // could be header or processing instruction
+        ParseProcessingInstr(Reader, Parent)
+      else if FirstChar <> '' then begin // Parse a tag, the first tag in a document is the DocumentElement
+        Node := ParseTag(Reader, Parent);
+        if not Assigned(FDocumentElement) and (Parent = Root) then
+          FDocumentElement := Node;
+      end;
     end;
   end;
 {$IFDEF LOGGING}
@@ -2155,8 +2162,7 @@ begin
     Attribute.AttributeType := atValue;
     ExtractText(Value, '''' + '"', []);
     Value := TrimLeft(Value);
-    if Value <> '' then
-    begin
+    if Value <> '' then begin
       Quote := Value[LowStr];
       Delete(Value, 1, 1);
       AttrText := ExtractText(Value, Quote, [etoDeleteStopChar]); // Get Attribute Value
@@ -2213,8 +2219,7 @@ begin
   else begin
     TextNode := False;
     for SingleChar in Line do
-      if AnsiStrScan(TXmlSpaces, SingleChar) = NIL then
-      begin
+      if AnsiStrScan(TXmlSpaces, SingleChar) = Nil then begin
         TextNode := True;
         Break;
       end;
@@ -2223,7 +2228,7 @@ begin
   if TextNode then begin
 //    Node := Parent.ChildNodes.Add(ntText);
     Node := Parent.AddChild('', ntText);
-    Node.Text := Line;
+    Node.Text := Unescape(Line);
   end;
 {$IFDEF LOGGING}
   DebugOutputStrToFile('XmlVerySimple.txt', 'ParseText - leave', True);
@@ -2244,7 +2249,7 @@ begin
 {$IFDEF LOGGING}
   DebugOutputStrToFile('XmlVerySimple.txt', 'ParseCData - value: ' + temp, True);
 {$ENDIF}
-  Node.Text := temp;
+  Node.Text := Unescape(temp);
 {$IFDEF LOGGING}
   DebugOutputStrToFile('XmlVerySimple.txt', 'ParseCData - leave', True);
 {$ENDIF}
@@ -2264,7 +2269,7 @@ begin
 {$IFDEF LOGGING}
   DebugOutputStrToFile('XmlVerySimple.txt', 'ParseComment - value: ' + temp, True);
 {$ENDIF}
-  Node.Text := temp;
+  Node.Text := Unescape(temp);
 {$IFDEF LOGGING}
   DebugOutputStrToFile('XmlVerySimple.txt', 'ParseComment - leave', True);
 {$ENDIF}
@@ -2285,13 +2290,12 @@ begin
 {$IFDEF LOGGING}
   DebugOutputStrToFile('XmlVerySimple.txt', 'ParseDocType - value: ' + temp, True);
 {$ENDIF}
-  Node.Text := temp;
+  Node.Text := Unescape(temp);
   if not Reader.EndOfStream then begin
     Quote := Reader.FirstChar;
     Reader.IncCharPos;
     if Quote = '[' then
-      Node.Text := Node.Text + Quote + Reader.ReadText(']',[etoDeleteStopChar]) + ']' +
-        Reader.ReadText('>', [etoDeleteStopChar]);
+      Node.Text := Node.Text + Quote + Unescape(Reader.ReadText(']',[etoDeleteStopChar])) + ']' + Unescape(Reader.ReadText('>', [etoDeleteStopChar]));
   end;
 {$IFDEF LOGGING}
   DebugOutputStrToFile('XmlVerySimple.txt', 'ParseDocType - leave', True);
@@ -2312,7 +2316,7 @@ begin
   DebugOutputStrToFile('XmlVerySimple.txt', 'ParseProcessingInstr - value: ' + Tag, True);
 {$ENDIF}
   Node := ParseTag(Tag, Parent);
-  if lowercase(Node.Name) = 'xml' then begin
+  if LowerCase(Node.Name) = 'xml' then begin
     // delete old one
     Root.ChildNodes.Remove(FHeader.Index);
     FHeader := Node;
@@ -2321,7 +2325,7 @@ begin
   else begin
     Node.NodeType := ntProcessingInstr;
     if not (doParseProcessingInstr in Options) then begin
-      Node.Text := Tag;
+      Node.Text := Unescape(Tag);
       Node.AttributeList.Clear;
     end;
   end;
@@ -2331,7 +2335,7 @@ begin
 {$ENDIF}
 end;
 
-function TXmlVerySimple.ParseTag(Reader: TXmlReader; ParseText: Boolean; var Parent: TXmlNode): TXmlNode;
+function TXmlVerySimple.ParseTag(Reader: TXmlReader; var Parent: TXmlNode): TXmlNode;
 var
   Tag: String;
   ALine: String;
@@ -2349,15 +2353,7 @@ begin
     ALine := Reader.ReadText('<', []);
     ALine := Unescape(ALine);
 
-    if PreserveWhiteSpace then
-      Result.Text := ALine
-    else
-      for SingleChar in ALine do
-        if AnsiStrScan(TXmlSpaces, SingleChar) = NIL then
-        begin
-          Result.Text := ALine;
-          Break;
-        end;
+    ParseText(ALine, Parent);
   end;
 {$IFDEF LOGGING}
   DebugOutputStrToFile('XmlVerySimple.txt', 'ParseTag(1) - leave', True);
@@ -2437,7 +2433,6 @@ begin
 {$ENDIF}
 end;
 
-
 function TXmlVerySimple.SaveToFile(const FileName: String): TXmlVerySimple;
 var
   Stream: TFileStream;
@@ -2504,15 +2499,15 @@ var
 begin
 //  Options:=Options + [doParseProcessingInstr];
   Node := Root.FindNode('xml-stylesheet', [ntProcessingInstr], [nsRecursive]);
-  if Assigned(Node) then
-    Node.SetAttribute('href', ReplaceStr(Path, '\','/'))
-  else begin
+  if not Assigned(Node) then
+  begin
     if Assigned(DocumentElement) then
       Node:=Root.InsertChildBefore(DocumentElement, 'xml-stylesheet', ntProcessingInstr)
     else
       Node:=Root.InsertChildAfter(Header, 'xml-stylesheet', ntProcessingInstr);
-    Node.SetAttribute('type', 'text/xsl').SetAttribute('href', ReplaceStr(Path, '\','/'));
+
   end;
+  Node.SetAttribute('type', 'text/xsl').SetAttribute('href', ReplaceStr(Path, '\','/'));
 end;
 
 procedure TXmlVerySimple.SetDocumentElement(Value: TXMlNode);
@@ -2556,6 +2551,54 @@ begin
   FHeader.Attributes['version'] := Value;
 end;
 
+class function TXmlVerySimple.Escape(const Value: String): String;
+//begin
+//  Result := ReplaceStr(Value, '&', '&amp;');
+//  Result := ReplaceStr(Result, '<', '&lt;');
+//  Result := ReplaceStr(Result, '>', '&gt;');
+//  Result := ReplaceStr(Result, '"', '&quot;');
+//end;
+var
+  sLen, sIndex: Integer;
+begin
+  sLen:=Length(Value);
+  sIndex := 1;
+  Result:=Value;
+  while sIndex <= sLen do begin
+    case Result[sIndex] of
+      '&': begin
+        Insert('amp;', Result, sIndex + 1);
+        Inc(sIndex, 4);
+        Inc(sLen, 4);
+      end;
+      '<': begin
+        Result[sIndex]:='&';
+        Insert('lt;', Result, sIndex + 1);
+        Inc(sIndex, 3);
+        Inc(sLen, 3);
+      end;
+      '>': begin
+        Result[sIndex]:='&';
+        Insert('gt;', Result, sIndex + 1);
+        Inc(sIndex, 3);
+        Inc(sLen, 3);
+      end;
+      '"': begin
+        Result[sIndex]:='&';
+        Insert('quot;', Result, sIndex + 1);
+        Inc(sIndex, 5);
+        Inc(sLen, 5);
+      end;
+      '''': begin
+        Result[sIndex]:='&';
+        Insert('apos;', Result, sIndex + 1);
+        Inc(sIndex, 5);
+        Inc(sLen, 5);
+      end;
+    end;
+    Inc(sIndex);
+  end;
+end;
 
 class function TXmlVerySimple.Unescape(const Value: String): String;
 //begin
@@ -2638,12 +2681,6 @@ begin
   finally
     utf8:='';
   end;
-end;
-
-class function TXmlVerySimple.Escape(const Value: String): String;
-begin
-  Result := TXmlAttribute.Escape(Value);
-//  Result := ReplaceStr(Result, '''', '&apos;');
 end;
 
 function TXmlVerySimple.ExtractText(var Line: String; const StopChars: String;
@@ -2771,8 +2808,9 @@ procedure TXmlNode.Assign(const Node: TXmlNode);
 begin
   NodeName :=Node.NodeName;
   NodeType :=Node.NodeType;
-  NodeValue:=Node.NodeValue;
+  //NodeValue:=Node.NodeValue;
   UserData :=Node.UserData;
+  Text     :=Node.Text;
   AssignAttributes(Node);
   AddNodes(Node);
 end;
@@ -2795,12 +2833,13 @@ var
   write_bom: Boolean;
 begin
   if not Assigned(FDocument) then begin
-    Stream := TStringStream.Create('', TEncoding.UTF8);
-    try
-      Result := Stream.DataString;
-    finally
-      Stream.Free;
-    end;
+//    Stream := TStringStream.Create('', TEncoding.UTF8);
+//    try
+//      Result := Stream.DataString;
+//    finally
+//      Stream.Free;
+//    end;
+    Result := '';
   end
   else begin
     if (Length(FDocument.Encoding) = 0) or (CompareText(FDocument.Encoding, 'utf-8') = 0) then
@@ -2818,6 +2857,42 @@ begin
       Stream.Free;
       if write_bom then
         FDocument.Options:=FDocument.Options + [doWriteBOM];
+    end;
+  end;
+end;
+
+function TXmlNode.ToString(const WhichPart: TXmlNodeDefinitionPart): String;
+const
+  BufferSize: Integer = 1024 * 1024; // 1MB buffer, so writing from buffer to disk is less frequent
+var
+  Stream: TStringStream;
+  Writer: TStreamWriter;
+begin
+  if not Assigned(FDocument) then begin
+    Result := '';
+  end
+  else begin
+    if (Length(FDocument.Encoding) = 0) or (CompareText(FDocument.Encoding, 'utf-8') = 0) then begin
+      Stream := TStringStream.Create('', TEncoding.UTF8);
+      Writer := TStreamWriter.Create(Stream, TEncoding.UTF8, False, BufferSize);
+    end
+    else if CompareText(FDocument.Encoding, 'windows-1250') = 0 then begin
+      Stream := TStringStream.Create('', TEncoding.GetEncoding(1250));
+      Writer := TStreamWriter.Create(Stream, TEncoding.GetEncoding(1250), False, BufferSize);
+    end
+    else begin
+      Stream := TStringStream.Create('', TEncoding.ANSI);
+      Writer := TStreamWriter.Create(Stream, TEncoding.ANSI, False, BufferSize);
+    end;
+
+    try
+      Writer.AutoFlush := False; // save to stream only when buffer is full
+      Self.ComposeNode(Writer, WhichPart);
+      Writer.Flush;
+      Result := Stream.DataString;
+    finally
+      Writer.Free;
+      Stream.Free;
     end;
   end;
 end;
@@ -2952,13 +3027,6 @@ begin
   end;
 end;
 
-{
-function TXmlNode.FindNodeRecursive(const Name: String; NodeTypes: TXmlNodeTypes = [ntElement]): TXmlNodeList;
-begin
-  Result := ChildNodes.FindNodes(Name, NodeTypes);
-end;
-}
-
 function TXmlNode.FindNode(const Name: String; NodeTypes: TXmlNodeTypes = [ntElement]; const SearchOptions: TXmlNodeSearchTypes = []): TXmlNode;
 var
   SearchWithoutPrefix: Boolean;
@@ -3051,6 +3119,13 @@ begin
     Result := '';
 end;
 
+function TXmlNode.GetNodeValue: String;
+begin
+  Result := '';
+  if Self.HasTextChildNode then
+    Result := Self.FirstChild.Text;
+end;
+
 function TXmlNode.HasPrefix: Boolean;
 begin
   Result := (Prefix <> '');
@@ -3079,6 +3154,11 @@ end;
 function TXmlNode.HasChildNodes: Boolean;
 begin
   Result := (ChildNodes.Count > 0);
+end;
+
+function TXmlNode.HasTextChildNode: Boolean;
+begin
+  Result := Self.HasChildNodes and Self.FirstChild.IsTextElement;
 end;
 
 function TXmlNode.InsertChild(const Name: String; Position: Integer; NodeType: TXmlNodeType = ntElement): TXmlNode;
@@ -3117,7 +3197,7 @@ end;
 
 function TXmlNode.IsTextElement: Boolean;
 begin
-  Result := (Text <> '') and (not HasChildNodes);
+  Result := (NodeType in [ntElement, ntText]) and (Text <> ''); // and not HasChildNodes;
 end;
 
 function TXmlNode.LastChild: TXmlNode;
@@ -3162,6 +3242,23 @@ begin
   SetAttribute(AttrName, AttrValue);
 end;
 
+procedure TXmlNode.SetNodeValue(const Value: String);
+var
+  Node: TXmlNode;
+begin
+  if Self.HasTextChildNode then begin
+    Self.FirstChild.Text := Value;
+    Exit;
+  end
+  else if not Self.HasChildNodes then begin
+    Node := Self.AddChild('', ntText);
+    Node.Text := Value;
+    Exit;
+  end;
+
+  raise EXmlNodeException.Create('Node has children and can not be text node at the same time !');
+end;
+
 function TXmlNode.SetAttribute(const AttrName, AttrValue: String): TXmlNode;
 var
   Attribute: TXmlAttribute;
@@ -3188,17 +3285,18 @@ begin
   Result := Self;
 end;
 
-function TXmlNode.SetText(const Value: String): TXmlNode;
-begin
-  Text := Value;
-  Result := Self;
-end;
+//function TXmlNode.SetText(const Value: String): TXmlNode;
+//begin
+//  Text := Value;
+//  Result := Self;
+//end;
 
 procedure TXmlNode.Compose(Writer: TStreamWriter; RootNode: TXmlNode);
 var
   Child: TXmlNode;
 begin
   SkipIndent := False;
+  ParentIndentNode := Nil;
   if Assigned(FDocument) then begin
     if doCompact in FDocument.Options then begin
       Writer.NewLine := '';
@@ -3227,105 +3325,152 @@ begin
     Walk(Writer, '', Child);
 end;
 
-procedure TXmlNode.Walk(Writer: TStreamWriter; const PrefixNode: String; Node: TXmlNode);
+function TXmlNode.ComposeNode(Writer: TStreamWriter; const WhichPart: TXmlNodeDefinitionPart): String;
+begin
+  SkipIndent := False;
+  ParentIndentNode := Nil;
+  if Assigned(FDocument) then begin
+    if doCompact in FDocument.Options then begin
+      Writer.NewLine := '';
+      LineBreak := '';
+    end
+    else begin
+      Writer.NewLine := FDocument.LineBreak;
+      LineBreak := FDocument.LineBreak;
+    end;
+  end
+  else begin
+    Writer.NewLine := #13#10; // Windows CRLF
+    LineBreak := #13#10;
+  end;
+
+  Walk(Writer, '', Self, False, WhichPart);
+end;
+
+procedure TXmlNode.Walk(Writer: TStreamWriter; const PrefixNode: String; Node: TXmlNode; const WalkChildren: Boolean = True; const WhichPart: TXmlNodeDefinitionPart = ndpFull);
 var
   Child: TXmlNode;
   Line: String;
   Indent: String;
 begin
-  if (Assigned(FDocument) and (Node = FDocument.Root.ChildNodes.First)){ or ((Node.ParentNode <> Nil) and (Node = Node.ParentNode.ChildNodes.First))} or SkipIndent then begin
-    Line := '<';
-    SkipIndent := False;
-  end
-  else
-    Line := LineBreak + PrefixNode + '<';
-
-  case Node.NodeType of
-    ntComment: begin
-      Writer.Write(Line + '!--' + Node.Text + '-->');
-      Exit;
-    end;
-    ntDocType: begin
-      Writer.Write(Line + '!DOCTYPE ' + Node.Text + '>');
-      Exit;
-    end;
-    ntCData: begin
-      Writer.Write('<![CDATA[' + Node.Text + ']]>');
-      Exit;
-    end;
-    ntText: begin
-      Writer.Write(Node.Text);
-      SkipIndent := True;
-      Exit;
-    end;
-    ntProcessingInstr: begin
-      if Node.AttributeList.Count > 0 then
-        Line := Line + '?' + Trim(Node.Name) + ' ' + Trim(Node.AttributeList.AsString) + '?>'
+  if WhichPart in [ndpFull, ndpOpen] then begin
+    if (Assigned(FDocument) and (Node = FDocument.Root.ChildNodes.First)){ or ((Node.ParentNode <> Nil) and (Node = Node.ParentNode.ChildNodes.First))} or SkipIndent then begin
+      Line := '<';
+      SkipIndent := False;
+    end
+    else begin
+      if not WalkChildren then begin
+        Line := '<';
+        SkipIndent := True;
+      end
       else
-        Line := Line + '?' + Node.Text + '?>';
-      if Assigned(FDocument) and Assigned(FDocument.XmlEscapeProcedure) then
-        FDocument.XmlEscapeProcedure(Line);
-      Writer.Write(Line);
-      Exit;
+        Line := LineBreak + PrefixNode + '<';
     end;
-    ntXmlDecl: begin
-      if Assigned(FDocument) and (doSkipHeader in FDocument.Options) then
+
+    case Node.NodeType of
+      ntComment: begin
+        Writer.Write(Line + '!--' + TXmlVerySimple.Escape(Node.Text) + '-->');
         Exit;
-      if Node.AttributeList.Count > 0 then
-        Line := Line + '?' + Trim(Node.Name) + ' ' + Trim(Node.AttributeList.AsString) + '?>'
-      else
-        Line := Line + '?' + Node.Text + '?>';
-      if Assigned(FDocument) and Assigned(FDocument.XmlEscapeProcedure) then
-        FDocument.XmlEscapeProcedure(Line);
-      Writer.Write(Line);
+      end;
+      ntDocType: begin
+        Writer.Write(Line + '!DOCTYPE ' + TXmlVerySimple.Escape(Node.Text) + '>');
+        Exit;
+      end;
+      ntCData: begin
+        Writer.Write('<![CDATA[' + TXmlVerySimple.Escape(Node.Text) + ']]>');
+        Exit;
+      end;
+      ntText: begin
+        Writer.Write(TXmlVerySimple.Escape(Node.Text));
+        if doSmartNodeAutoIndent in FDocument.Options then begin
+          if not SkipIndent and (Node.ParentNode <> Nil) and (ParentIndentNode = Nil) then
+            ParentIndentNode := Node.ParentNode.ParentNode;
+          SkipIndent := True;
+        end;
+        Exit;
+      end;
+      ntProcessingInstr: begin
+        if Node.AttributeList.Count > 0 then
+          Line := Line + '?' + Trim(Node.Name) + ' ' + Trim(Node.AttributeList.AsString) + '?>'
+        else
+          Line := Line + '?' + Node.Text + '?>';
+        if Assigned(FDocument) and Assigned(FDocument.XmlEscapeProcedure) then
+          FDocument.XmlEscapeProcedure(Line);
+        Writer.Write(Line);
+        Exit;
+      end;
+      ntXmlDecl: begin
+        if Assigned(FDocument) and (doSkipHeader in FDocument.Options) then
+          Exit;
+        if Node.AttributeList.Count > 0 then
+          Line := Line + '?' + Trim(Node.Name) + ' ' + Trim(Node.AttributeList.AsString) + '?>'
+        else
+          Line := Line + '?' + Node.Text + '?>';
+        if Assigned(FDocument) and Assigned(FDocument.XmlEscapeProcedure) then
+          FDocument.XmlEscapeProcedure(Line);
+        Writer.Write(Line);
+        Exit;
+      end;
+    end;
+
+    Line := Line + Trim(Node.NameWithPrefix);
+    if Node.AttributeList.Count > 0 then
+      Line := Line + ' ' + Trim(Node.AttributeList.AsString);
+
+    // Self closing tags
+    if (Length(Node.Text) = 0) and not Node.HasChildNodes then begin
+      Writer.Write(Line + '/>');
       Exit;
+    end;
+
+    Line := Line + '>';
+    if WhichPart = ndpFull then begin
+      if Length(Node.Text) > 0 then begin
+        Line := Line + TXmlVerySimple.Escape(Node.Text);
+        if Node.HasChildNodes then
+          SkipIndent := True;
+      end;
+    end;
+
+    if Assigned(FDocument) and Assigned(FDocument.XmlEscapeProcedure) then
+      FDocument.XmlEscapeProcedure(Line);
+
+    Writer.Write(Line);
+
+    if WalkChildren then begin
+      // Set indent for child nodes
+      if Assigned(FDocument) then begin
+        if (doCompact in FDocument.Options) or (doCompactWithBreakes in FDocument.Options) then
+          Indent := ''
+        else
+          Indent := PrefixNode + IfThen(FDocument.GetNodeAutoIndent, FDocument.NodeIndentStr);
+      end
+      else begin
+        Indent := '';
+      end;
+    end;
+
+    if WalkChildren then begin
+      // Process child nodes
+      for Child in Node.ChildNodes do
+        Walk(Writer, Indent, Child, WalkChildren, WhichPart);
+
+      // If node has child nodes and last child node is not a text node then set indent for closing tag
+      if Node.HasChildNodes and not Node.HasTextChildNode and not SkipIndent then
+        Indent := LineBreak + PrefixNode
+      else
+        Indent := '';
     end;
   end;
 
-  Line := Line + Trim(Node.NameWithPrefix);
-  if Node.AttributeList.Count > 0 then
-    Line := Line + ' ' + Trim(Node.AttributeList.AsString);
-
-  // Self closing tags
-  if (Length(Node.Text) = 0) and not Node.HasChildNodes then begin
-    Writer.Write(Line + '/>');
-    Exit;
+  if (doSmartNodeAutoIndent in FDocument.Options) and (ParentIndentNode <> Nil) and (Node = ParentIndentNode) then begin
+    ParentIndentNode := Nil;
+    SkipIndent := False;
+    Indent := LineBreak + PrefixNode;
   end;
 
-  Line := Line + '>';
-  if Length(Node.Text) > 0 then begin
-    Line := Line + TXmlAttribute.Escape(Node.Text);
-    if Node.HasChildNodes then
-      SkipIndent := True;
-  end;
-
-  if Assigned(FDocument) and Assigned(FDocument.XmlEscapeProcedure) then
-    FDocument.XmlEscapeProcedure(Line);
-
-  Writer.Write(Line);
-
-  // Set indent for child nodes
-  if Assigned(FDocument) then begin
-    if (doCompact in FDocument.Options) or (doCompactWithBreakes in FDocument.Options) then
-      Indent := ''
-    else
-      Indent := PrefixNode + IfThen(FDocument.GetNodeAutoIndent, FDocument.NodeIndentStr);
-  end
-  else begin
-    Indent := '';
-  end;
-
-  // Process child nodes
-  for Child in Node.ChildNodes do
-    Walk(Writer, Indent, Child);
-
-  // If node has child nodes and last child node is not a text node then set indent for closing tag
-  if (Node.HasChildNodes) and not SkipIndent then
-    Indent := LineBreak + PrefixNode
-  else
-    Indent := '';
-
-  Writer.Write(Indent + '</' + Trim(Node.NameWithPrefix) + '>');
+  if (WhichPart in [ndpFull, ndpClose]) and not (Node.NodeType in [ntComment, ntDocType, ntCData, ntText, ntProcessingInstr, ntXmlDecl]) then
+    Writer.Write(Indent + '</' + Trim(Node.NameWithPrefix) + '>');
 end;
 
 { TXmlAttributeEnumerator }
@@ -3577,19 +3722,29 @@ begin
   Result := Find(Name, NodeTypes, SearchWithoutPrefix);
 end;
 
+procedure TXmlNodeList.FindNodesRecursive(const List: TXmlNodeList; const Name: String; NodeTypes: TXmlNodeTypes = [ntElement]; const SearchWithoutPrefix: Boolean = False);
+var
+  Node: TXmlNode;
+begin
+  for Node in Self do begin
+    if ((NodeTypes = []) or (Node.NodeType in NodeTypes)) and IsSame(IfThen(Document.GetSearchExcludeNamespacePrefix or SearchWithoutPrefix, Node.Name, Node.NameWithPrefix), Name) then begin
+      List.Parent := Node.ParentNode;
+      List.Add(Node);
+    end;
+    if Node.HasChildNodes then
+      Node.ChildNodes.FindNodesRecursive(List, Name, NodeTypes, SearchWithoutPrefix);
+  end;
+  List.Parent := Nil;
+end;
+
 function TXmlNodeList.FindNodes(const Name: String; NodeTypes: TXmlNodeTypes = [ntElement]; const SearchWithoutPrefix: Boolean = False): TXmlNodeList;
 var
   Node: TXmlNode;
 begin
   Result := TXmlNodeList.Create(False);
-  Result.Document := Document;
   try
-    for Node in Self do
-      if ((NodeTypes = []) or (Node.NodeType in NodeTypes)) and IsSame(IfThen(Document.GetSearchExcludeNamespacePrefix or SearchWithoutPrefix, Node.Name, Node.NameWithPrefix), Name) then begin
-        Result.Parent := Node.ParentNode;
-        Result.Add(Node);
-      end;
-    Result.Parent := NIL;
+    Result.Document := Document;
+    FindNodesRecursive(Result, Name, NodeTypes, SearchWithoutPrefix);
   except
     Result.Free;
     raise;
@@ -3828,52 +3983,8 @@ begin
 end;
 
 class function TXmlAttribute.Escape(const Value: String): String;
-//begin
-//  Result := ReplaceStr(Value, '&', '&amp;');
-//  Result := ReplaceStr(Result, '<', '&lt;');
-//  Result := ReplaceStr(Result, '>', '&gt;');
-//  Result := ReplaceStr(Result, '"', '&quot;');
-//end;
-var
-  sLen, sIndex: Integer;
 begin
-  sLen:=Length(Value);
-  sIndex := 1;
-  Result:=Value;
-  while sIndex <= sLen do begin
-    case Result[sIndex] of
-      '&': begin
-        Insert('amp;', Result, sIndex + 1);
-        Inc(sIndex, 4);
-        Inc(sLen, 4);
-      end;
-      '<': begin
-        Result[sIndex]:='&';
-        Insert('lt;', Result, sIndex + 1);
-        Inc(sIndex, 3);
-        Inc(sLen, 3);
-      end;
-      '>': begin
-        Result[sIndex]:='&';
-        Insert('gt;', Result, sIndex + 1);
-        Inc(sIndex, 3);
-        Inc(sLen, 3);
-      end;
-      '"': begin
-        Result[sIndex]:='&';
-        Insert('quot;', Result, sIndex + 1);
-        Inc(sIndex, 5);
-        Inc(sLen, 5);
-      end;
-      '''': begin
-        Result[sIndex]:='&';
-        Insert('apos;', Result, sIndex + 1);
-        Inc(sIndex, 5);
-        Inc(sLen, 5);
-      end;
-    end;
-    Inc(sIndex);
-  end;
+  Result := TXmlVerySimple.Escape(Value);
 end;
 
 procedure TXmlAttribute.SetValue(const Value: String);
@@ -4116,7 +4227,7 @@ begin
         Self.FillBuffer;
         if Self.FBufferedData.Length = 0 then
           Break;
-        NewLineIndex := 0;
+      NewLineIndex := 0;     // zeto + 2023-07-28 Jacek
       end;
     end;
 
