@@ -1,8 +1,8 @@
-{ VerySimpleXML v2.6.0 - a lightweight, one-unit, cross-platform XML reader/writer
+{ VerySimpleXML v2.7.0 - a lightweight, one-unit, cross-platform XML reader/writer
   for Delphi 2010-XE10.3 by Dennis Spreen
   http://blog.spreendigital.de/2011/11/10/verysimplexml-a-lightweight-delphi-xml-reader-and-writer/
 
-  (c) Copyrights 2011-2025 Dennis D. Spreen <dennis@spreendigital.de>
+  (c) Copyrights 2011-2026 Dennis D. Spreen <dennis@spreendigital.de>
   This unit is free and can be used for any needs. The introduction of
   any changes and the use of those changed library is permitted without
   limitations. Only requirement:
@@ -22,5 +22,5 @@
 {
   XSD schema support and some useful things - made by NevTon.
   XPATH support made by NevTon.
-  Portions copyright (C) 2015-2025 Grzegorz Molenda aka NevTon; ViTESOFT.net; <gmnevton@o2.pl>
+  Portions copyright (C) 2015-2026 Grzegorz Molenda aka NevTon; ViTESOFT.net; <gmnevton@o2.pl>
 }
