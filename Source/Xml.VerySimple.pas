@@ -1,8 +1,8 @@
-{ VerySimpleXML v2.6.0 - a lightweight, one-unit, cross-platform XML reader/writer
+{ VerySimpleXML v2.7.0 - a lightweight, one-unit, cross-platform XML reader/writer
   for Delphi 2010-XE10.3 by Dennis Spreen
   http://blog.spreendigital.de/2011/11/10/verysimplexml-a-lightweight-delphi-xml-reader-and-writer/
 
-  (c) Copyrights 2011-2025 Dennis D. Spreen <dennis@spreendigital.de>
+  (c) Copyrights 2011-2026 Dennis D. Spreen <dennis@spreendigital.de>
   This unit is free and can be used for any needs. The introduction of
   any changes and the use of those changed library is permitted without
   limitations. Only requirement:
@@ -22,7 +22,7 @@
 {
   XSD schema support and some useful things - made by NevTon.
   XPATH support made by NevTon.
-  Portions copyright (C) 2015-2025 Grzegorz Molenda aka NevTon; ViTESOFT.net; <gmnevton@o2.pl>
+  Portions copyright (C) 2015-2026 Grzegorz Molenda aka NevTon; ViTESOFT.net; <gmnevton@o2.pl>
 }
 unit XML.VerySimple;
 
@@ -94,13 +94,40 @@ type
   end;
 {$IFEND}
 
+  TXmlStringHashList = class
+  private type
+    THashItem = record
+      Hash: Cardinal;
+      Index: Integer;
+    end;
+  private
+    FCount: Integer;
+    StringList: TStringList;
+    HashList: Array of THashItem;
+  public
+    constructor Create;
+    destructor Destroy; override;
+    //
+    procedure Clear;
+    function HashOf(const Key: String): Cardinal;
+    function Find(const Key: String; var AItem: THashItem): Integer; overload;
+    function Find(const Hash: Cardinal; var AItem: THashItem): Integer; overload;
+    function Add(const Value: String): Cardinal;
+    function GetStrByHash(const Hash: Cardinal): String;
+    function GetStrByIndex(const Index: Integer): String;
+  end;
+
   TXmlAttribute = class(TObject)
   private
-    FValue: String;
+    ///	<summary> Attribute name </summary>
+    FName: Cardinal;
+    FValue: Cardinal;
+    function GetName: String;
+    function Getvalue: String;
+    procedure SetName(const Value: String);
     procedure SetValue(const Value: String);
   public
-    ///	<summary> Attribute name </summary>
-    Name: String;
+    [Weak] Document: TXmlVerySimple;
     ///	<summary> Attributes without values are set to atSingle, else to atValue </summary>
     AttributeType: TXmlAttributeType;
     ///	<summary> Create a new attribute </summary>
@@ -110,7 +137,8 @@ type
     /// <summary> Escapes XML control characters </summar>
     class function Escape(const Value: String): String; virtual;
     ///	<summary> Attribute value (always a String) </summary>
-    property Value: String read FValue write SetValue;
+    property Name: String read GetName write SetName;
+    property Value: String read GetValue write SetValue;
   end;
 
   TXmlObjectList = class(TObjectList<TObject>)
@@ -158,19 +186,24 @@ type
   TXmlNode = class(TObject)
   private
     ///	<summary> Name of the node </summary>
-    FName,
-    FPrefix: String; // Node name
+    FNameWithPrefix: Cardinal; // Node name
+    ///	<summary> All attributes of the node </summary>
+    FAttributeList: TXmlAttributeList;
+    ///	<summary> List of child nodes, never NIL </summary>
+    FChildNodes: TXmlNodeList;
     FLevel: Cardinal; // node level in tree structure
     FIndex: Cardinal; // node index in nodes list structure
     FPrevSibling,           // link to the node's previous sibling or nil if it is the first node
     FNextSibling: TXmlNode; // link to the node's next sibling or nil if it is the last node
-    SkipIndent: Boolean; // used internally to tighten the output of xml nodes to string representation
-    ParentIndentNode: TXmlNode;
-    ///	<summary> LineBreak used for the xml output, default set to sLineBreak which is OS dependent </summary>
-    LineBreak: String;
+    ///	<summary> Text value of the node </summary>
+    FText: Cardinal;
 
     procedure SetName(Value: String);
     function GetName: String;
+    function GetNameWithPrefix: String;
+    function GetPrefix: String;
+    function GetText: String;
+    procedure SetText(Value: String);
     function IsSame(const Value1, Value2: String): Boolean;
     ///	<summary> Find a child node by its name in tree </summary>
     function FindNodeRecursive(const Name: String; NodeTypes: TXmlNodeTypes = [ntElement]; const SearchOptions: TXmlNodeSearchTypes = []): TXmlNode; overload; virtual;
@@ -188,25 +221,22 @@ type
     procedure SetNodeValue(const Value: String); virtual;
     procedure Compose(Writer: TStreamWriter; RootNode: TXmlNode); virtual;
     function  ComposeNode(Writer: TStreamWriter; const WhichPart: TXmlNodeDefinitionPart): String; virtual;
-    procedure Walk(Writer: TStreamWriter; const PrefixNode: String; Node: TXmlNode; const WalkChildren: Boolean = True; const WhichPart: TXmlNodeDefinitionPart = ndpFull); virtual;
+    procedure Walk(Writer: TStreamWriter; const LineBreak, PrefixNode: String; Node: TXmlNode; const WalkChildren: Boolean = True; const WhichPart: TXmlNodeDefinitionPart = ndpFull); virtual;
   public
-    ///	<summary> All attributes of the node </summary>
-    AttributeList: TXmlAttributeList;
-    ///	<summary> List of child nodes, never NIL </summary>
-    ChildNodes: TXmlNodeList;
     ///	<summary> The node type, see TXmlNodeType </summary>
     NodeType: TXmlNodeType;
     ///	<summary> Parent node, may be NIL </summary>
     [Weak] ParentNode: TXmlNode;
     ///	<summary> User data value of the node </summary>
     UserData: String;
-    ///	<summary> Text value of the node </summary>
-    Text: String;
     /// <summary> Creates a new XML node </summary>
     constructor Create(ANodeType: TXmlNodeType = ntElement); overload; virtual;
     constructor Create(ANode: TXmlNode); overload; virtual;
     ///	<summary> Removes the node from its parent and frees all of its childs </summary>
     destructor Destroy; override;
+    //
+    procedure CreateAttributeList;
+    procedure CreateChildNodes;
     /// <summary> Assigns an existing XML node to this </summary>
     procedure Assign(const Node: TXmlNode); virtual;
     /// <summary> Assigns an existing XML node attributes to this </summary>
@@ -280,23 +310,28 @@ type
     ///	<summary> Fluent interface for setting the node type </summary>
     function SetNodeType(Value: TXmlNodeType): TXmlNode; virtual;
     ///	<summary> Name of the node </summary>
-    property Name: String read FName write SetName;
+    property Name: String read GetName write SetName;
     ///	<summary> Name of the node </summary>
-    property NameWithPrefix: String read GetName;
+    property NameWithPrefix: String read GetNameWithPrefix;
     ///	<summary> Prefix of the node Name </summary>
-    property Prefix: String read FPrefix;
+    property Prefix: String read GetPrefix;
     ///	<summary> Attributes of a node, accessible by attribute name (case insensitive) </summary>
     property Attributes[const AttrName: String]: String read GetAttr write SetAttr;
+    property AttributeList: TXmlAttributeList read FAttributeList;
+    ///	<summary> List of child nodes, never NIL </summary>
+    property ChildNodes: TXmlNodeList read FChildNodes;
     ///	<summary> The xml document of the node </summary>
     property Document: TXmlVerySimple read FDocument write SetDocument;
     ///	<summary> The node name, same as property Name </summary>
-    property NodeName: String read FName write SetName;
+    property NodeName: String read GetName write SetName;
     ///	<summary> The child node text if node has children and first child is text node </summary>
     property NodeValue: String read GetNodeValue write SetNodeValue;
     ///	<summary> The node Level in tree </summary>
     property Level: Cardinal read FLevel;
     ///	<summary> The node Index in list </summary>
     property Index: Cardinal read FIndex;
+    ///	<summary> Text value of the node </summary>
+    property Text: String read GetText write SetText;
   end;
 
   TXmlNodeEnumerator = class
@@ -319,6 +354,7 @@ type
     ///	<summary> The parent node of the node list </summary>
     [Weak] Parent: TXmlNode;
     //
+    /// <summary> Assigns an existing XML node to this </summary>
     function First: TXmlNode; reintroduce;
     function Last: TXmlNode; reintroduce;
     function GetEnumerator: TXmlNodeEnumerator; reintroduce;
@@ -378,6 +414,10 @@ type
 
   TXmlVerySimple = class(TObject)
   private
+    SkipIndent: Boolean; // used internally to tighten the output of xml nodes to string representation
+    ParentIndentNode: TXmlNode;
+    //
+    StringHashList: TXmlStringHashList;
   protected
     Root: TXmlNode;
     [Weak] FHeader: TXmlNode;
@@ -516,6 +556,7 @@ type
 {$IFEND}
 
 const
+  CInvalidStrHashId = High(LongWord);
 {$IF CompilerVersion >= 24} // Delphi XE3+ can use Low(), High() and TEncoding.ANSI
   LowStr = Low(String); // Get string index base, may be 0 (NextGen compiler) or 1 (standard compiler)
 
@@ -1491,20 +1532,22 @@ begin
   else
     nodeList:=Node.ChildNodes;
 
-  for i:=0 to nodeList.Count - 1 do begin
-    item:=nodeList.Items[i];
-    if (element_type = ntElement) and (matchAll or (TXmlNode(item).NodeName = Element)) then
-        List.Add(TXmlNode(item), TXmlNode(item).ParentNode)
-    else if (element_type = ntAttribute) and (matchAll or (TXmlAttribute(item).Name = Element)) and (List.IndexOf(Node) = -1) then
-      List.Add(Node, Node.ParentNode);
+  if nodeList <> Nil then begin
+    for i:=0 to nodeList.Count - 1 do begin
+      item:=nodeList.Items[i];
+      if (element_type = ntElement) and (matchAll or (TXmlNode(item).NodeName = Element)) then
+          List.Add(TXmlNode(item), TXmlNode(item).ParentNode)
+      else if (element_type = ntAttribute) and (matchAll or (TXmlAttribute(item).Name = Element)) and (List.IndexOf(Node) = -1) then
+        List.Add(Node, Node.ParentNode);
 
-    if Recurse and (element_type = ntElement) then begin
-      GetChildNodes(List, TXmlNode(item), Element, element_type, True);
+      if Recurse and (element_type = ntElement) then begin
+        GetChildNodes(List, TXmlNode(item), Element, element_type, True);
+      end;
     end;
   end;
 
   // if recursion is on and we were iterating over attributes, we must also check child nodes
-  if Recurse and (element_type = ntAttribute) then begin
+  if Recurse and (element_type = ntAttribute) and (Node.ChildNodes <> Nil) then begin
     for i:=0 to Node.ChildNodes.Count - 1 do begin
       child:=Node.ChildNodes.Get(i);
       GetChildNodes(List, child, Element, element_type, True);
@@ -1575,7 +1618,7 @@ procedure TXmlXPathEvaluator.FilterByChild(SrcList, DestList: TXmlNodeList; cons
     i: Integer;
   begin
     Result:=Nil;
-    if Node = Nil then
+    if (Node = Nil) or (Node.ChildNodes = Nil) then
       Exit;
     for i:=0 to Node.ChildNodes.Count - 1 do begin
       if Node.ChildNodes.Get(i).NodeType = ntText then begin
@@ -1631,7 +1674,10 @@ begin
       if (i < 0) or (i >= SrcList.Count) then
         raise EXmlXPathException.CreateFmt('Invalid predicate index [%s]', [ChildName + ChildValue]);
 
-      Node:=Node.ParentNode.ChildNodes.Get(i);
+      if Node.ParentNode.ChildNodes <> Nil then
+        Node:=Node.ParentNode.ChildNodes.Get(i)
+      else
+        Node:=Nil;
     end
     else
       raise EXmlXPathException.CreateFmt('Unsupported predicate expression [%s]', [ChildName + ChildValue]);
@@ -1835,14 +1881,127 @@ begin
   end;
 end;
 
+{ TXmlStringHashList }
+
+constructor TXmlStringHashList.Create;
+begin
+  FCount := 0;
+  StringList := TStringList.Create;
+  SetLength(HashList, 0);
+end;
+
+destructor TXmlStringHashList.Destroy;
+begin
+  StringList.Free;
+  SetLength(HashList, 0);
+end;
+
+procedure TXmlStringHashList.Clear;
+begin
+  FCount := 0;
+  StringList.Clear;
+  SetLength(HashList, 0);
+end;
+
+function TXmlStringHashList.HashOf(const Key: String): Cardinal;
+var
+  I: Integer;
+begin
+  Result := 0;
+  for I := 0 to Key.Length - 1 do
+    Result := ((Result shl 2) or (Result shr 30)) xor Cardinal(Ord(Key.Chars[I]));
+end;
+
+function TXmlStringHashList.Find(const Key: String; var AItem: THashItem): Integer;
+var
+  hash: Cardinal;
+  i: Integer;
+begin
+  Result := -1;
+  AItem.Hash := CInvalidStrHashId;
+  AItem.Index := -1;
+  if FCount = 0 then
+    Exit;
+
+  hash := HashOf(Key);
+  for i := 0 to FCount - 1 do
+    if HashList[i].Hash = hash then begin
+      Result := HashList[i].Index;
+      AItem := HashList[i];
+      Break;
+    end;
+end;
+
+function TXmlStringHashList.Find(const Hash: Cardinal; var AItem: THashItem): Integer;
+var
+  i: Integer;
+begin
+  Result := -1;
+  AItem.Hash := CInvalidStrHashId;
+  AItem.Index := -1;
+  if (Hash = CInvalidStrHashId) or (FCount = 0) then
+    Exit;
+
+  for i := 0 to FCount - 1 do
+    if HashList[i].Hash = Hash then begin
+      Result := HashList[i].Index;
+      AItem := HashList[i];
+      Break;
+    end;
+end;
+
+function TXmlStringHashList.Add(const Value: String): Cardinal;
+var
+  hash: Cardinal;
+  hash_item: THashItem;
+  existing: THashItem;
+  idx: Integer;
+begin
+  if Length(Value) = 0 then
+    Exit(CInvalidStrHashId);
+
+  hash := HashOf(Value);
+  if Find(hash, existing) = -1 then begin
+    hash_item.Hash := hash;
+    hash_item.Index := StringList.Add(Value);
+    idx := FCount;
+    SetLength(HashList, idx + 1);
+    HashList[idx] := hash_item;
+    Inc(FCount, 1);
+    Result := hash;
+  end
+  else
+    Result := existing.Hash;
+end;
+
+function TXmlStringHashList.GetStrByHash(const Hash: Cardinal): String;
+var
+  i: Integer;
+begin
+  Result := '';
+  if Hash = CInvalidStrHashId then
+    Exit;
+
+  for i := 0 to FCount - 1 do
+    if HashList[i].Hash = Hash then begin
+      Result := StringList.Strings[HashList[i].Index];
+      Break;
+    end;
+end;
+
+function TXmlStringHashList.GetStrByIndex(const Index: Integer): String;
+begin
+  Result := '';
+  if (Index >= 0) and (Index < StringList.Count) then
+    Result := StringList.Strings[Index];
+end;
+
 { TVerySimpleXml }
 
 function TXmlVerySimple.AddChild(const Name: String; NodeType: TXmlNodeType = ntElement): TXmlNode;
 begin
-//  Result := CreateNode(Name, NodeType);
   Result:=Nil; // satisfy compiler
   try
-//    Root.ChildNodes.Add(Result);
     Result:=Root.AddChild(Name, NodeType);
   except
     Result.Free;
@@ -1859,25 +2018,25 @@ var
   Child: TXmlNode;
 begin
   Result:=-1;
-  if Node <> Nil then begin
-    wasRoot:=(DocumentElement = Node);
-    Node.Clear;
-    Result:=Node.Index;
-    Root.ChildNodes.Remove(Result);
-    if wasRoot then begin
-      if Root.ChildNodes.Count > 0 then begin
-        for Child in Root.ChildNodes do begin
-          if TXmlNode(Child).NodeType = ntElement then begin
-            FDocumentElement := Child;
-            Exit;
-          end;
+  if (Node = Nil) or (Root.ChildNodes = Nil) then
+    Exit;
+
+  wasRoot:=(DocumentElement = Node);
+  Node.Clear;
+  Result:=Node.Index;
+  Root.ChildNodes.Remove(Result);
+  if wasRoot then begin
+    if Root.ChildNodes.Count > 0 then begin
+      for Child in Root.ChildNodes do begin
+        if TXmlNode(Child).NodeType = ntElement then begin
+          FDocumentElement := Child;
+          Exit;
         end;
-        DocumentElement := Nil;
-      end
-      else
-        FDocumentElement := Nil;
-    end;
-//    Node.Free;
+      end;
+      DocumentElement := Nil;
+    end
+    else
+      FDocumentElement := Nil;
   end;
 end;
 
@@ -1898,6 +2057,7 @@ begin
   FDocumentElement := NIL;
   FHeader := NIL;
   Root.Clear;
+  StringHashList.Clear;
   CreateHeaderNode;
 {$IFDEF LOGGING}
   DebugOutputStrToFile('XmlVerySimple.txt', 'Clear - leave', True);
@@ -1907,6 +2067,7 @@ end;
 constructor TXmlVerySimple.Create;
 begin
   inherited;
+  StringHashList := TXmlStringHashList.Create;
   Root := TXmlNode.Create;
   Root.FLevel := 0;
 //  Root.FIndex := 0;
@@ -1955,6 +2116,7 @@ begin
   Root.ParentNode := NIL;
   Root.Clear;
   Root.Free;
+  StringHashList.Free;
   inherited;
 end;
 
@@ -2128,11 +2290,13 @@ begin
 
   // some xml/html documents does not have this set, so set it up
   if FDocumentElement = Nil then begin
-    for Node in Root.ChildNodes do
-      if Node.NodeType = ntElement then begin
-        FDocumentElement := Node;
-        Break;
-      end;
+    if Root.ChildNodes <> Nil then begin
+      for Node in Root.ChildNodes do
+        if Node.NodeType = ntElement then begin
+          FDocumentElement := Node;
+          Break;
+        end;
+    end;
   end;
 {$IFDEF LOGGING}
   DebugOutputStrToFile('XmlVerySimple.txt', 'Parse - leave', True);
@@ -2226,7 +2390,6 @@ begin
   end;
 
   if TextNode then begin
-//    Node := Parent.ChildNodes.Add(ntText);
     Node := Parent.AddChild('', ntText);
     Node.Text := Unescape(Line);
   end;
@@ -2243,7 +2406,6 @@ begin
 {$IFDEF LOGGING}
   DebugOutputStrToFile('XmlVerySimple.txt', 'ParseCData - enter', True);
 {$ENDIF}
-//  Node := Parent.ChildNodes.Add(ntCData);
   Node := Parent.AddChild('', ntCData);
   temp:=Reader.ReadText(']]>', [etoDeleteStopChar, etoStopString]);
 {$IFDEF LOGGING}
@@ -2263,7 +2425,6 @@ begin
 {$IFDEF LOGGING}
   DebugOutputStrToFile('XmlVerySimple.txt', 'ParseComment - enter', True);
 {$ENDIF}
-//  Node := Parent.ChildNodes.Add(ntComment);
   Node := Parent.AddChild('', ntComment);
   temp:=Reader.ReadText('-->', [etoDeleteStopChar, etoStopString]);
 {$IFDEF LOGGING}
@@ -2284,7 +2445,6 @@ begin
 {$IFDEF LOGGING}
   DebugOutputStrToFile('XmlVerySimple.txt', 'ParseDocType - enter', True);
 {$ENDIF}
-//  Node := Parent.ChildNodes.Add(ntDocType);
   Node := Parent.AddChild('', ntDocType);
   temp:=Reader.ReadText('>[', []);
 {$IFDEF LOGGING}
@@ -2318,7 +2478,8 @@ begin
   Node := ParseTag(Tag, Parent);
   if LowerCase(Node.Name) = 'xml' then begin
     // delete old one
-    Root.ChildNodes.Remove(FHeader.Index);
+    if Root.ChildNodes <> Nil then
+      Root.ChildNodes.Remove(FHeader.Index);
     FHeader := Node;
     FHeader.NodeType := ntXmlDecl;
   end
@@ -2326,7 +2487,8 @@ begin
     Node.NodeType := ntProcessingInstr;
     if not (doParseProcessingInstr in Options) then begin
       Node.Text := Unescape(Tag);
-      Node.AttributeList.Clear;
+      if Node.AttributeList <> Nil then
+        Node.AttributeList.Clear;
     end;
   end;
   Parent := Node.ParentNode;
@@ -2394,7 +2556,6 @@ begin
 {$IFDEF LOGGING}
   DebugOutputStrToFile('XmlVerySimple.txt', 'ParseTag(2) - add child', True);
 {$ENDIF}
-//  Node := Parent.ChildNodes.Add;
   Node := Parent.AddChild('');
   Result := Node;
   Tag := TagStr;
@@ -2420,8 +2581,10 @@ begin
     ALine := Tag;
     Delete(Tag, CharPos, Length(Tag));
     Delete(ALine, 1, CharPos);
-    if ALine <> '' then
+    if ALine <> '' then begin
+      Node.CreateAttributeList;
       ParseAttributes(ALine, Node.AttributeList);
+    end;
   end;
 
   if Length(TagName) > 0 then
@@ -2513,8 +2676,10 @@ end;
 procedure TXmlVerySimple.SetDocumentElement(Value: TXMlNode);
 begin
   FDocumentElement := Value;
-  if Value.ParentNode = NIL then
+  if Value.ParentNode = Nil then begin
+    Root.CreateChildNodes;
     Root.ChildNodes.Add(Value);
+  end;
 end;
 
 procedure TXmlVerySimple.SetEncoding(const Value: String);
@@ -2717,12 +2882,13 @@ var
 begin
   Last:=Nil;
   try
-    if ChildNodes.Count > 0 then
+    if (FChildNodes <> Nil) and (FChildNodes.Count > 0) then
       Last:=ChildNodes.Last;
   except
     Last:=Nil;
   end;
-  Result:=ChildNodes.Add(AName, ANodeType);
+  CreateChildNodes;
+  Result:=FChildNodes.Add(AName, ANodeType);
   Result.FPrevSibling:=Nil;
   Result.FNextSibling:=Nil;
   if Last <> Nil then begin
@@ -2760,48 +2926,74 @@ begin
   if AddRootNode then begin
     Child:=AddChild(RootNode.NameWithPrefix, RootNode.NodeType);
     Child.Text:=RootNode.Text;
-    for Attribute in RootNode.AttributeList do // add all attributes to child node
-      Child.SetAttribute(Attribute.Name, Attribute.Value);
+    if RootNode.AttributeList <> Nil then
+      for Attribute in RootNode.AttributeList do // add all attributes to child node
+        Child.SetAttribute(Attribute.Name, Attribute.Value);
   end;
-  for Node in RootNode.ChildNodes do // add all root node child nodes to child node
-    Child.AddNodes(Node, True);
+  if RootNode.ChildNodes <> Nil then begin
+    for Node in RootNode.ChildNodes do // add all root node child nodes to child node
+      Child.AddNodes(Node, True);
+  end;
 end;
 
 procedure TXmlNode.Clear;
 begin
   Text := '';
-  AttributeList.Clear;
-  ChildNodes.Clear;
-  UserData:='';
+  if FAttributeList <> Nil then
+    FAttributeList.Clear;
+  if FChildNodes <> Nil then
+    FChildNodes.Clear;
+  UserData := '';
+//  if UserData <> Nil then
+//    FreeAndNil(UserData);
 end;
 
 constructor TXmlNode.Create(ANodeType: TXmlNodeType = ntElement);
 begin
-  ChildNodes := TXmlNodeList.Create;
-  ChildNodes.Parent := Self;
-  AttributeList := TXmlAttributeList.Create;
+  FChildNodes := Nil;
+  FAttributeList := Nil;
   NodeType := ANodeType;
-  FName:='';
-  FPrefix:='';
+  FNameWithPrefix:=CInvalidStrHashId;
+  FText:=CInvalidStrHashId;
   FLevel:=0;
   FIndex:=0;
-  UserData:='';
+//  UserData := Nil;
+  UserData := '';
 end;
 
 constructor TXmlNode.Create(ANode: TXmlNode);
 begin
   Create(ANode.NodeType);
-  ParentNode:=Nil;
-  Document:=Nil;
+  ParentNode := Nil;
+  Document := ANode.Document;
   Assign(ANode);
 end;
 
 destructor TXmlNode.Destroy;
 begin
   Clear;
-  ChildNodes.Free;
-  AttributeList.Free;
+  if ChildNodes <> Nil then
+    ChildNodes.Free;
+  if AttributeList <> Nil then
+    AttributeList.Free;
   inherited;
+end;
+
+procedure TXmlNode.CreateAttributeList;
+begin
+  if FAttributeList = Nil then begin
+    FAttributeList := TXmlAttributeList.Create;
+    FAttributeList.Document := Document;
+  end;
+end;
+
+procedure TXmlNode.CreateChildNodes;
+begin
+  if FChildNodes = Nil then begin
+    FChildNodes := TXmlNodeList.Create;
+    FChildNodes.Parent := Self;
+    FChildNodes.Document := Document;
+  end;
 end;
 
 procedure TXmlNode.Assign(const Node: TXmlNode);
@@ -2819,6 +3011,9 @@ procedure TXmlNode.AssignAttributes(const Node: TXmlNode; const AddNotExistingOn
 var
   Attribute: TXmlAttribute;
 begin
+  if Node.AttributeList = Nil then
+    Exit;
+
   for Attribute in Node.AttributeList do begin // add attributes to node
     if AddNotExistingOnly and not HasAttribute(Attribute.Name) then
       SetAttribute(Attribute.Name, Attribute.Value)
@@ -2911,22 +3106,43 @@ begin
 end;
 
 procedure TXmlNode.SetName(Value: String);
-var
-  i: Integer;
 begin
-  i:=Pos(':', Value);
-  if i > 0 then begin // name with prefix
-    FPrefix := Copy(Value, 1, i - 1);
-    Delete(Value, 1, i);
-  end;
-  FName := Value;
+  FNameWithPrefix := Document.StringHashList.Add(Value);
 end;
 
 function TXmlNode.GetName: String;
+var
+  i: Integer;
 begin
-  Result := FName;
-  if HasPrefix then
-    Result := FPrefix + ':' + Result;
+  Result := Document.StringHashList.GetStrByHash(FNameWithPrefix);
+  i:=Pos(':', Result);
+  if i > 0 then
+    Delete(Result, 1, i);
+end;
+
+function TXmlNode.GetNameWithPrefix: String;
+begin
+  Result := Document.StringHashList.GetStrByHash(FNameWithPrefix);
+end;
+
+function TXmlNode.GetPrefix: String;
+var
+  i: Integer;
+begin
+  Result := Document.StringHashList.GetStrByHash(FNameWithPrefix);
+  i:=Pos(':', Result);
+  if i > 0 then
+    Delete(Result, i, Length(Result) - i + 1);
+end;
+
+function TXmlNode.GetText: String;
+begin
+  Result := Document.StringHashList.GetStrByHash(FText);
+end;
+
+procedure TXmlNode.SetText(Value: String);
+begin
+  FText := Document.StringHashList.Add(Value);
 end;
 
 function TXmlNode.IsSame(const Value1, Value2: String): Boolean;
@@ -2965,9 +3181,12 @@ var
   Node: TXmlNode;
   SearchWithoutPrefix: Boolean;
 begin
-  SearchWithoutPrefix:=(nsSearchWithoutPrefix in SearchOptions);
 //  Result := ChildNodes.Find(Name, NodeTypes);
   Result:=Nil;
+  if ChildNodes = Nil then
+    Exit;
+  //
+  SearchWithoutPrefix:=(nsSearchWithoutPrefix in SearchOptions);
   for Node in ChildNodes do begin
     if ((NodeTypes = []) or (Node.NodeType in NodeTypes)) and IsSame(IfThen(Document.GetSearchExcludeNamespacePrefix or SearchWithoutPrefix, Node.Name, Node.NameWithPrefix), Name) then begin
       Result:=Node;
@@ -2986,9 +3205,12 @@ var
   Node: TXmlNode;
   SearchWithoutPrefix: Boolean;
 begin
-  SearchWithoutPrefix:=(nsSearchWithoutPrefix in SearchOptions);
 //  Result := ChildNodes.Find(Name, AttrName, NodeTypes);
   Result:=Nil;
+  if ChildNodes = Nil then
+    Exit;
+  //
+  SearchWithoutPrefix:=(nsSearchWithoutPrefix in SearchOptions);
   for Node in ChildNodes do begin
     if ((NodeTypes = []) or (Node.NodeType in NodeTypes)) and
        ((Name = '') or ((Name <> '') and IsSame(IfThen(Document.GetSearchExcludeNamespacePrefix or SearchWithoutPrefix, Node.Name, Node.NameWithPrefix), Name))) and
@@ -3009,9 +3231,12 @@ var
   Node: TXmlNode;
   SearchWithoutPrefix: Boolean;
 begin
-  SearchWithoutPrefix:=(nsSearchWithoutPrefix in SearchOptions);
 //  Result := ChildNodes.Find(Name, AttrName, NodeTypes);
   Result:=Nil;
+  if ChildNodes = Nil then
+    Exit;
+  //
+  SearchWithoutPrefix:=(nsSearchWithoutPrefix in SearchOptions);
   for Node in ChildNodes do begin
     if ((NodeTypes = []) or (Node.NodeType in NodeTypes)) and // if no type specified or node type in types
        ((Name = '') or ((Name <> '') and IsSame(IfThen(Document.GetSearchExcludeNamespacePrefix or SearchWithoutPrefix, Node.Name, Node.NameWithPrefix), Name))) and
@@ -3031,13 +3256,15 @@ function TXmlNode.FindNode(const Name: String; NodeTypes: TXmlNodeTypes = [ntEle
 var
   SearchWithoutPrefix: Boolean;
 begin
+  Result := Nil;
   SearchWithoutPrefix:=(nsSearchWithoutPrefix in SearchOptions);
   if ((NodeTypes = []) or (Self.NodeType in NodeTypes)) and
      IsSame(IfThen(Document.GetSearchExcludeNamespacePrefix or SearchWithoutPrefix, Self.Name, Self.NameWithPrefix), Name) then begin
     Result := Self;
     Exit;
   end;
-  Result := ChildNodes.Find(Name, NodeTypes, SearchWithoutPrefix);
+  if ChildNodes <> Nil then
+    Result := ChildNodes.Find(Name, NodeTypes, SearchWithoutPrefix);
   if (Result = Nil) and (nsRecursive in SearchOptions) then
     Result:=FindNodeRecursive(Name, NodeTypes, SearchOptions);
 end;
@@ -3046,6 +3273,7 @@ function TXmlNode.FindNode(const Name, AttrName: String; NodeTypes: TXmlNodeType
 var
   SearchWithoutPrefix: Boolean;
 begin
+  Result := Nil;
   SearchWithoutPrefix:=(nsSearchWithoutPrefix in SearchOptions);
   if ((NodeTypes = []) or (Self.NodeType in NodeTypes)) and
      ((Name = '') or ((Name <> '') and IsSame(IfThen(Document.GetSearchExcludeNamespacePrefix or SearchWithoutPrefix, Self.Name, Self.NameWithPrefix), Name))) and
@@ -3053,7 +3281,8 @@ begin
     Result := Self;
     Exit;
   end;
-  Result := ChildNodes.Find(Name, AttrName, NodeTypes, SearchWithoutPrefix);
+  if ChildNodes <> Nil then
+    Result := ChildNodes.Find(Name, AttrName, NodeTypes, SearchWithoutPrefix);
   if (Result = Nil) and (nsRecursive in SearchOptions) then
     Result:=FindNodeRecursive(Name, AttrName, NodeTypes, SearchOptions);
 end;
@@ -3062,6 +3291,7 @@ function TXmlNode.FindNode(const Name, AttrName, AttrValue: String; NodeTypes: T
 var
   SearchWithoutPrefix: Boolean;
 begin
+  Result := Nil;
   SearchWithoutPrefix:=(nsSearchWithoutPrefix in SearchOptions);
   if ((NodeTypes = []) or (Self.NodeType in NodeTypes)) and // if no type specified or node type in types
      ((Name = '') or ((Name <> '') and IsSame(IfThen(Document.GetSearchExcludeNamespacePrefix or SearchWithoutPrefix, Self.Name, Self.NameWithPrefix), Name))) and
@@ -3069,20 +3299,26 @@ begin
     Result := Self;
     Exit;
   end;
-  Result := ChildNodes.Find(Name, AttrName, AttrValue, NodeTypes, SearchWithoutPrefix);
+  if ChildNodes <> Nil then
+    Result := ChildNodes.Find(Name, AttrName, AttrValue, NodeTypes, SearchWithoutPrefix);
   if (Result = Nil) and (nsRecursive in SearchOptions) then
     Result:=FindNodeRecursive(Name, AttrName, AttrValue, NodeTypes, SearchOptions);
 end;
 
 function TXmlNode.FindNodes(const Name: String; NodeTypes: TXmlNodeTypes = [ntElement]; const SearchWithoutPrefix: Boolean = False): TXmlNodeList;
 begin
-  Result := ChildNodes.FindNodes(Name, NodeTypes, SearchWithoutPrefix);
+  Result := Nil;
+  if ChildNodes <> Nil then
+    Result := ChildNodes.FindNodes(Name, NodeTypes, SearchWithoutPrefix);
 end;
 
 procedure TXmlNode.ScanNodes(Name: String; CallBack: TXmlNodeCallBack; const SearchWithoutPrefix: Boolean = False);
 var
   Node: TXmlNode;
 begin
+  if ChildNodes = Nil then
+    Exit;
+  //
   Name := lowercase(Name);
   for Node in ChildNodes do
     if (Name = '') or ((Name <> '') and
@@ -3094,7 +3330,9 @@ end;
 
 function TXmlNode.FirstChild: TXmlNode;
 begin
-  Result := ChildNodes.First;
+  Result := Nil;
+  if ChildNodes <> Nil then
+    Result := ChildNodes.First;
 end;
 
 function TXmlNode.FirstChild(const Name: String): TXmlNode;
@@ -3112,11 +3350,13 @@ function TXmlNode.GetAttr(const AttrName: String): String;
 var
   Attribute: TXmlAttribute;
 begin
+  Result := '';
+  if AttributeList = Nil then
+    Exit;
+
   Attribute := AttributeList.Find(AttrName);
   if Assigned(Attribute) then
-    Result := Attribute.Value
-  else
-    Result := '';
+    Result := Attribute.Value;
 end;
 
 function TXmlNode.GetNodeValue: String;
@@ -3127,33 +3367,41 @@ begin
 end;
 
 function TXmlNode.HasPrefix: Boolean;
+var
+  i: Integer;
+  temp: String;
 begin
-  Result := (Prefix <> '');
+  Result := False;
+  temp := Document.StringHashList.GetStrByHash(FNameWithPrefix);
+  i:=Pos(':', temp);
+  if i > 0 then
+    Delete(temp, i, Length(temp) - i + 1);
+  Result := Length(temp) > 0;
 end;
 
 function TXmlNode.HasAttribute(const AttrName: String): Boolean;
 begin
-  Result := AttributeList.HasAttribute(AttrName);
+  Result := (AttributeList <> Nil) and AttributeList.HasAttribute(AttrName);
 end;
 
 function TXmlNode.HasChild(const Name: String; NodeTypes: TXmlNodeTypes = [ntElement]): Boolean;
 begin
-  Result := ChildNodes.HasNode(Name, NodeTypes);
+  Result := (FChildNodes <> Nil) and FChildNodes.HasNode(Name, NodeTypes);
 end;
 
 function TXmlNode.HasChild(const Name: String; out Node: TXmlNode; NodeTypes: TXmlNodeTypes = [ntElement]): Boolean;
 begin
-  Result := ChildNodes.HasNode(Name, Node, NodeTypes);
+  Result := (FChildNodes <> Nil) and FChildNodes.HasNode(Name, Node, NodeTypes);
 end;
 
 function TXmlNode.HasChild(const Name: String; out NodeList: TXmlNodeList; NodeTypes: TXmlNodeTypes = [ntElement]): Boolean;
 begin
-  Result := ChildNodes.HasNode(Name, NodeList, NodeTypes);
+  Result := (FChildNodes <> Nil) and FChildNodes.HasNode(Name, NodeList, NodeTypes);
 end;
 
 function TXmlNode.HasChildNodes: Boolean;
 begin
-  Result := (ChildNodes.Count > 0);
+  Result := (FChildNodes <> Nil) and (FChildNodes.Count > 0);
 end;
 
 function TXmlNode.HasTextChildNode: Boolean;
@@ -3163,14 +3411,16 @@ end;
 
 function TXmlNode.InsertChild(const Name: String; Position: Integer; NodeType: TXmlNodeType = ntElement): TXmlNode;
 begin
-  Result := ChildNodes.Insert(Name, Position, NodeType);
+  CreateChildNodes;
+  Result := FChildNodes.Insert(Name, Position, NodeType);
   if Assigned(Result) then
     Result.ParentNode := Self;
 end;
 
 function TXmlNode.InsertChild(const NodeToInsert: TXmlNode; Position: Integer): TXmlNode;
 begin
-  Result := ChildNodes.Insert(NodeToInsert, Position);
+  CreateChildNodes;
+  Result := FChildNodes.Insert(NodeToInsert, Position);
   if Assigned(Result) then
     Result.ParentNode := Self;
 end;
@@ -3202,10 +3452,10 @@ end;
 
 function TXmlNode.LastChild: TXmlNode;
 begin
-  if ChildNodes.Count > 0 then
-    Result := ChildNodes.Last
+  if (FChildNodes <> Nil) and (FChildNodes.Count > 0) then
+    Result := FChildNodes.Last
   else
-    Result := NIL;
+    Result := Nil;
 end;
 
 function TXmlNode.LastChild(const Name: String): TXmlNode;
@@ -3221,19 +3471,11 @@ end;
 
 function TXmlNode.PreviousSibling: TXmlNode;
 begin
-//  if not Assigned(ParentNode) then
-//    Result := NIL
-//  else
-//    Result := ParentNode.ChildNodes.PreviousSibling(Self);
   Result:=FPrevSibling;
 end;
 
 function TXmlNode.NextSibling: TXmlNode;
 begin
-//  if not Assigned(ParentNode) then
-//    Result := NIL
-//  else
-//    Result := ParentNode.ChildNodes.NextSibling(Self);
   Result:=FNextSibling;
 end;
 
@@ -3263,6 +3505,7 @@ function TXmlNode.SetAttribute(const AttrName, AttrValue: String): TXmlNode;
 var
   Attribute: TXmlAttribute;
 begin
+  CreateAttributeList;
   Attribute := AttributeList.Find(AttrName); // Search for given name
   if not Assigned(Attribute) then // If attribute is not found, create one
     Attribute := AttributeList.Add(AttrName);
@@ -3275,8 +3518,10 @@ end;
 procedure TXmlNode.SetDocument(Value: TXmlVerySimple);
 begin
   FDocument := Value;
-  AttributeList.Document := Value;
-  ChildNodes.Document := Value;
+  if FAttributeList <> Nil then
+    FAttributeList.Document := Value;
+  if FChildNodes <> Nil then
+    FChildNodes.Document := Value;
 end;
 
 function TXmlNode.SetNodeType(Value: TXmlNodeType): TXmlNode;
@@ -3294,9 +3539,10 @@ end;
 procedure TXmlNode.Compose(Writer: TStreamWriter; RootNode: TXmlNode);
 var
   Child: TXmlNode;
+  LineBreak: String;
 begin
-  SkipIndent := False;
-  ParentIndentNode := Nil;
+  Document.SkipIndent := False;
+  Document.ParentIndentNode := Nil;
   if Assigned(FDocument) then begin
     if doCompact in FDocument.Options then begin
       Writer.NewLine := '';
@@ -3321,14 +3567,18 @@ begin
 //  if Assigned(Document.DocumentElement) and (RootNode = Document.DocumentElement) then
 //    Walk(Writer, '', RootNode);
 
-  for Child in RootNode.ChildNodes do
-    Walk(Writer, '', Child);
+  if RootNode.ChildNodes <> Nil then begin
+    for Child in RootNode.ChildNodes do
+      Walk(Writer, LineBreak, '', Child);
+  end;
 end;
 
 function TXmlNode.ComposeNode(Writer: TStreamWriter; const WhichPart: TXmlNodeDefinitionPart): String;
+var
+  LineBreak: String;
 begin
-  SkipIndent := False;
-  ParentIndentNode := Nil;
+  Document.SkipIndent := False;
+  Document.ParentIndentNode := Nil;
   if Assigned(FDocument) then begin
     if doCompact in FDocument.Options then begin
       Writer.NewLine := '';
@@ -3344,24 +3594,24 @@ begin
     LineBreak := #13#10;
   end;
 
-  Walk(Writer, '', Self, False, WhichPart);
+  Walk(Writer, LineBreak, '', Self, False, WhichPart);
 end;
 
-procedure TXmlNode.Walk(Writer: TStreamWriter; const PrefixNode: String; Node: TXmlNode; const WalkChildren: Boolean = True; const WhichPart: TXmlNodeDefinitionPart = ndpFull);
+procedure TXmlNode.Walk(Writer: TStreamWriter; const LineBreak, PrefixNode: String; Node: TXmlNode; const WalkChildren: Boolean = True; const WhichPart: TXmlNodeDefinitionPart = ndpFull);
 var
   Child: TXmlNode;
   Line: String;
   Indent: String;
 begin
   if WhichPart in [ndpFull, ndpOpen] then begin
-    if (Assigned(FDocument) and (Node = FDocument.Root.ChildNodes.First)){ or ((Node.ParentNode <> Nil) and (Node = Node.ParentNode.ChildNodes.First))} or SkipIndent then begin
+    if (Assigned(FDocument) and (FDocument.Root.FChildNodes <> Nil) and (Node = FDocument.Root.ChildNodes.First)) or Document.SkipIndent then begin
       Line := '<';
-      SkipIndent := False;
+      Document.SkipIndent := False;
     end
     else begin
       if not WalkChildren then begin
         Line := '<';
-        SkipIndent := True;
+        Document.SkipIndent := True;
       end
       else
         Line := LineBreak + PrefixNode + '<';
@@ -3383,14 +3633,14 @@ begin
       ntText: begin
         Writer.Write(TXmlVerySimple.Escape(Node.Text));
         if doSmartNodeAutoIndent in FDocument.Options then begin
-          if not SkipIndent and (Node.ParentNode <> Nil) and (ParentIndentNode = Nil) then
-            ParentIndentNode := Node.ParentNode.ParentNode;
-          SkipIndent := True;
+          if not Document.SkipIndent and (Node.ParentNode <> Nil) and (Document.ParentIndentNode = Nil) then
+            Document.ParentIndentNode := Node.ParentNode.ParentNode;
+          Document.SkipIndent := True;
         end;
         Exit;
       end;
       ntProcessingInstr: begin
-        if Node.AttributeList.Count > 0 then
+        if (Node.AttributeList <> Nil) and (Node.AttributeList.Count > 0) then
           Line := Line + '?' + Trim(Node.Name) + ' ' + Trim(Node.AttributeList.AsString) + '?>'
         else
           Line := Line + '?' + Node.Text + '?>';
@@ -3402,7 +3652,7 @@ begin
       ntXmlDecl: begin
         if Assigned(FDocument) and (doSkipHeader in FDocument.Options) then
           Exit;
-        if Node.AttributeList.Count > 0 then
+        if (Node.AttributeList <> Nil) and (Node.AttributeList.Count > 0) then
           Line := Line + '?' + Trim(Node.Name) + ' ' + Trim(Node.AttributeList.AsString) + '?>'
         else
           Line := Line + '?' + Node.Text + '?>';
@@ -3414,7 +3664,7 @@ begin
     end;
 
     Line := Line + Trim(Node.NameWithPrefix);
-    if Node.AttributeList.Count > 0 then
+    if (Node.AttributeList <> Nil) and (Node.AttributeList.Count > 0) then
       Line := Line + ' ' + Trim(Node.AttributeList.AsString);
 
     // Self closing tags
@@ -3428,7 +3678,7 @@ begin
       if Length(Node.Text) > 0 then begin
         Line := Line + TXmlVerySimple.Escape(Node.Text);
         if Node.HasChildNodes then
-          SkipIndent := True;
+          Document.SkipIndent := True;
       end;
     end;
 
@@ -3452,20 +3702,22 @@ begin
 
     if WalkChildren then begin
       // Process child nodes
-      for Child in Node.ChildNodes do
-        Walk(Writer, Indent, Child, WalkChildren, WhichPart);
+      if Node.ChildNodes <> Nil then begin
+        for Child in Node.ChildNodes do
+          Walk(Writer, LineBreak, Indent, Child, WalkChildren, WhichPart);
+      end;
 
       // If node has child nodes and last child node is not a text node then set indent for closing tag
-      if Node.HasChildNodes and not Node.HasTextChildNode and not SkipIndent then
+      if Node.HasChildNodes and not Node.HasTextChildNode and not Document.SkipIndent then
         Indent := LineBreak + PrefixNode
       else
         Indent := '';
     end;
   end;
 
-  if (doSmartNodeAutoIndent in FDocument.Options) and (ParentIndentNode <> Nil) and (Node = ParentIndentNode) then begin
-    ParentIndentNode := Nil;
-    SkipIndent := False;
+  if (doSmartNodeAutoIndent in FDocument.Options) and (Document.ParentIndentNode <> Nil) and (Node = Document.ParentIndentNode) then begin
+    Document.ParentIndentNode := Nil;
+    Document.SkipIndent := False;
     Indent := LineBreak + PrefixNode;
   end;
 
@@ -3521,6 +3773,7 @@ end;
 function TXmlAttributeList.Add(const Name: String): TXmlAttribute;
 begin
   Result := TXmlAttribute.Create;
+  Result.Document := Document;
   Result.Name := Name;
   try
     Add(Result);
@@ -3938,32 +4191,12 @@ begin
 end;
 
 function TXmlNodeList.PreviousSibling(Node: TXmlNode): TXmlNode;
-//var
-//  Index: Integer;
 begin
-//  Index := Self.IndexOf(Node);
-//  Index := Node.Index;
-//  if Index - 1 >= 0 then
-//    Result := Self[Index - 1]
-//  else
-//    Result := NIL;
   Result:=Node.PreviousSibling;
 end;
 
 function TXmlNodeList.NextSibling(Node: TXmlNode): TXmlNode;
-//var
-//  Index: Integer;
 begin
-//  if (not Assigned(Node)) and (Count > 0) then
-//    Result := First
-//  else begin
-//    Index := Self.IndexOf(Node);
-//    Index := Node.Index;
-//    if (Index >= 0) and (Index + 1 < Count) then
-//      Result := Self[Index + 1]
-//    else
-//      Result := NIL;
-//  end;
   Result:=Node.NextSibling;
 end;
 
@@ -3979,6 +4212,8 @@ end;
 
 constructor TXmlAttribute.Create;
 begin
+  FName := CInvalidStrHashId;
+  FValue := CInvalidStrHashId;
   AttributeType := atSingle;
 end;
 
@@ -3987,9 +4222,24 @@ begin
   Result := TXmlVerySimple.Escape(Value);
 end;
 
+function TXmlAttribute.GetName: String;
+begin
+  Result := Document.StringHashList.GetStrByHash(FName);
+end;
+
+function TXmlAttribute.Getvalue: String;
+begin
+  Result := Document.StringHashList.GetStrByHash(FValue);
+end;
+
+procedure TXmlAttribute.SetName(const Value: String);
+begin
+  FName := Document.StringHashList.Add(Value);
+end;
+
 procedure TXmlAttribute.SetValue(const Value: String);
 begin
-  FValue := Value;
+  FValue := Document.StringHashList.Add(Value);
   AttributeType := atValue;
 end;
 
