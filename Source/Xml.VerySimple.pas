@@ -94,34 +94,27 @@ type
   end;
 {$IFEND}
 
-  TXmlStringHashList = class
-  private type
-    THashItem = record
-      Hash: Cardinal;
-      Index: Integer;
-    end;
+  TXmlStringListId = Cardinal;
+
+  TXmlStringList = class
   private
-    FCount: Integer;
-    StringList: TStringList;
-    HashList: Array of THashItem;
+    FLock: TMREWSync;
+    FMap: TDictionary<String, TXmlStringListId>;
+    FList: TList<String>;
   public
     constructor Create;
     destructor Destroy; override;
     //
     procedure Clear;
-    function HashOf(const Key: String): Cardinal;
-    function Find(const Key: String; var AItem: THashItem): Integer; overload;
-    function Find(const Hash: Cardinal; var AItem: THashItem): Integer; overload;
-    function Add(const Value: String): Cardinal;
-    function GetStrByHash(const Hash: Cardinal): String;
-    function GetStrByIndex(const Index: Integer): String;
+    function Intern(const S: String): TXmlStringListId;
+    function Resolve(const Id: TXmlStringListId): String;
   end;
 
   TXmlAttribute = class(TObject)
   private
     ///	<summary> Attribute name </summary>
-    FName: Cardinal;
-    FValue: Cardinal;
+    FName: TXmlStringListId;
+    FValue: TXmlStringListId;
     function GetName: String;
     function Getvalue: String;
     procedure SetName(const Value: String);
@@ -186,7 +179,7 @@ type
   TXmlNode = class(TObject)
   private
     ///	<summary> Name of the node </summary>
-    FNameWithPrefix: Cardinal; // Node name
+    FNameWithPrefix: TXmlStringListId; // Node name
     ///	<summary> All attributes of the node </summary>
     FAttributeList: TXmlAttributeList;
     ///	<summary> List of child nodes, never NIL </summary>
@@ -196,7 +189,7 @@ type
     FPrevSibling,           // link to the node's previous sibling or nil if it is the first node
     FNextSibling: TXmlNode; // link to the node's next sibling or nil if it is the last node
     ///	<summary> Text value of the node </summary>
-    FText: Cardinal;
+    FText: TXmlStringListId;
 
     procedure SetName(Value: String);
     function GetName: String;
@@ -228,7 +221,7 @@ type
     ///	<summary> Parent node, may be NIL </summary>
     [Weak] ParentNode: TXmlNode;
     ///	<summary> User data value of the node </summary>
-    UserData: String;
+    UserData: String; //Pointer;
     /// <summary> Creates a new XML node </summary>
     constructor Create(ANodeType: TXmlNodeType = ntElement); overload; virtual;
     constructor Create(ANode: TXmlNode); overload; virtual;
@@ -417,7 +410,7 @@ type
     SkipIndent: Boolean; // used internally to tighten the output of xml nodes to string representation
     ParentIndentNode: TXmlNode;
     //
-    StringHashList: TXmlStringHashList;
+    StringIDList: TXmlStringList;
   protected
     Root: TXmlNode;
     [Weak] FHeader: TXmlNode;
@@ -556,7 +549,7 @@ type
 {$IFEND}
 
 const
-  CInvalidStrHashId = High(LongWord);
+  CInvalidStrId = 0;
 {$IF CompilerVersion >= 24} // Delphi XE3+ can use Low(), High() and TEncoding.ANSI
   LowStr = Low(String); // Get string index base, may be 0 (NextGen compiler) or 1 (standard compiler)
 
@@ -1881,119 +1874,56 @@ begin
   end;
 end;
 
-{ TXmlStringHashList }
+{ TXmlStringList }
 
-constructor TXmlStringHashList.Create;
+constructor TXmlStringList.Create;
 begin
-  FCount := 0;
-  StringList := TStringList.Create;
-  SetLength(HashList, 0);
+  FLock := TMREWSync.Create;
+  FMap := TDictionary<String, TXmlStringListId>.Create;
+  FList := TList<String>.Create;
+  FList.Add(''); // index 0 reserved (invalid)
 end;
 
-destructor TXmlStringHashList.Destroy;
+destructor TXmlStringList.Destroy;
 begin
-  StringList.Free;
-  SetLength(HashList, 0);
+  FMap.Free;
+  FList.Free;
+  FLock.Free;
+  inherited;
 end;
 
-procedure TXmlStringHashList.Clear;
+procedure TXmlStringList.Clear;
 begin
-  FCount := 0;
-  StringList.Clear;
-  SetLength(HashList, 0);
+  FLock.BeginWrite;
+  try
+    FMap.Clear;
+    FList.Clear;
+    FList.Add(''); // index 0 reserved (invalid)
+  finally
+    FLock.EndWrite;
+  end;
 end;
 
-function TXmlStringHashList.HashOf(const Key: String): Cardinal;
-var
-  I: Integer;
+function TXmlStringList.Intern(const S: String): TXmlStringListId;
 begin
-  Result := 0;
-  for I := 0 to Key.Length - 1 do
-    Result := ((Result shl 2) or (Result shr 30)) xor Cardinal(Ord(Key.Chars[I]));
-end;
-
-function TXmlStringHashList.Find(const Key: String; var AItem: THashItem): Integer;
-var
-  hash: Cardinal;
-  i: Integer;
-begin
-  Result := -1;
-  AItem.Hash := CInvalidStrHashId;
-  AItem.Index := -1;
-  if FCount = 0 then
-    Exit;
-
-  hash := HashOf(Key);
-  for i := 0 to FCount - 1 do
-    if HashList[i].Hash = hash then begin
-      Result := HashList[i].Index;
-      AItem := HashList[i];
-      Break;
+  FLock.BeginWrite;
+  try
+    if not FMap.TryGetValue(S, Result) then begin
+      Result := FList.Count;
+      FList.Add(S);
+      FMap.Add(S, Result);
     end;
+  finally
+    FLock.EndWrite;
+  end;
 end;
 
-function TXmlStringHashList.Find(const Hash: Cardinal; var AItem: THashItem): Integer;
-var
-  i: Integer;
+function TXmlStringList.Resolve(const Id: TXmlStringListId): String;
 begin
-  Result := -1;
-  AItem.Hash := CInvalidStrHashId;
-  AItem.Index := -1;
-  if (Hash = CInvalidStrHashId) or (FCount = 0) then
-    Exit;
-
-  for i := 0 to FCount - 1 do
-    if HashList[i].Hash = Hash then begin
-      Result := HashList[i].Index;
-      AItem := HashList[i];
-      Break;
-    end;
-end;
-
-function TXmlStringHashList.Add(const Value: String): Cardinal;
-var
-  hash: Cardinal;
-  hash_item: THashItem;
-  existing: THashItem;
-  idx: Integer;
-begin
-  if Length(Value) = 0 then
-    Exit(CInvalidStrHashId);
-
-  hash := HashOf(Value);
-  if Find(hash, existing) = -1 then begin
-    hash_item.Hash := hash;
-    hash_item.Index := StringList.Add(Value);
-    idx := FCount;
-    SetLength(HashList, idx + 1);
-    HashList[idx] := hash_item;
-    Inc(FCount, 1);
-    Result := hash;
-  end
+  if (Id > 0) and (Id < Cardinal(FList.Count)) then
+    Result := FList[Id]
   else
-    Result := existing.Hash;
-end;
-
-function TXmlStringHashList.GetStrByHash(const Hash: Cardinal): String;
-var
-  i: Integer;
-begin
-  Result := '';
-  if Hash = CInvalidStrHashId then
-    Exit;
-
-  for i := 0 to FCount - 1 do
-    if HashList[i].Hash = Hash then begin
-      Result := StringList.Strings[HashList[i].Index];
-      Break;
-    end;
-end;
-
-function TXmlStringHashList.GetStrByIndex(const Index: Integer): String;
-begin
-  Result := '';
-  if (Index >= 0) and (Index < StringList.Count) then
-    Result := StringList.Strings[Index];
+    Result := '';
 end;
 
 { TVerySimpleXml }
@@ -2057,7 +1987,7 @@ begin
   FDocumentElement := NIL;
   FHeader := NIL;
   Root.Clear;
-  StringHashList.Clear;
+  StringIDList.Clear;
   CreateHeaderNode;
 {$IFDEF LOGGING}
   DebugOutputStrToFile('XmlVerySimple.txt', 'Clear - leave', True);
@@ -2067,7 +1997,7 @@ end;
 constructor TXmlVerySimple.Create;
 begin
   inherited;
-  StringHashList := TXmlStringHashList.Create;
+  StringIDList := TXmlStringList.Create;
   Root := TXmlNode.Create;
   Root.FLevel := 0;
 //  Root.FIndex := 0;
@@ -2116,7 +2046,7 @@ begin
   Root.ParentNode := NIL;
   Root.Clear;
   Root.Free;
-  StringHashList.Free;
+  StringIDList.Free;
   inherited;
 end;
 
@@ -2943,9 +2873,9 @@ begin
     FAttributeList.Clear;
   if FChildNodes <> Nil then
     FChildNodes.Clear;
-  UserData := '';
 //  if UserData <> Nil then
 //    FreeAndNil(UserData);
+  UserData := '';
 end;
 
 constructor TXmlNode.Create(ANodeType: TXmlNodeType = ntElement);
@@ -2953,8 +2883,8 @@ begin
   FChildNodes := Nil;
   FAttributeList := Nil;
   NodeType := ANodeType;
-  FNameWithPrefix:=CInvalidStrHashId;
-  FText:=CInvalidStrHashId;
+  FNameWithPrefix:=CInvalidStrId;
+  FText:=CInvalidStrId;
   FLevel:=0;
   FIndex:=0;
 //  UserData := Nil;
@@ -3107,14 +3037,14 @@ end;
 
 procedure TXmlNode.SetName(Value: String);
 begin
-  FNameWithPrefix := Document.StringHashList.Add(Value);
+  FNameWithPrefix := Document.StringIDList.Intern(Value);
 end;
 
 function TXmlNode.GetName: String;
 var
   i: Integer;
 begin
-  Result := Document.StringHashList.GetStrByHash(FNameWithPrefix);
+  Result := Document.StringIDList.Resolve(FNameWithPrefix);
   i:=Pos(':', Result);
   if i > 0 then
     Delete(Result, 1, i);
@@ -3122,14 +3052,14 @@ end;
 
 function TXmlNode.GetNameWithPrefix: String;
 begin
-  Result := Document.StringHashList.GetStrByHash(FNameWithPrefix);
+  Result := Document.StringIDList.Resolve(FNameWithPrefix);
 end;
 
 function TXmlNode.GetPrefix: String;
 var
   i: Integer;
 begin
-  Result := Document.StringHashList.GetStrByHash(FNameWithPrefix);
+  Result := Document.StringIDList.Resolve(FNameWithPrefix);
   i:=Pos(':', Result);
   if i > 0 then
     Delete(Result, i, Length(Result) - i + 1);
@@ -3137,12 +3067,12 @@ end;
 
 function TXmlNode.GetText: String;
 begin
-  Result := Document.StringHashList.GetStrByHash(FText);
+  Result := Document.StringIDList.Resolve(FText);
 end;
 
 procedure TXmlNode.SetText(Value: String);
 begin
-  FText := Document.StringHashList.Add(Value);
+  FText := Document.StringIDList.Intern(Value);
 end;
 
 function TXmlNode.IsSame(const Value1, Value2: String): Boolean;
@@ -3372,7 +3302,7 @@ var
   temp: String;
 begin
   Result := False;
-  temp := Document.StringHashList.GetStrByHash(FNameWithPrefix);
+  temp := Document.StringIDList.Resolve(FNameWithPrefix);
   i:=Pos(':', temp);
   if i > 0 then
     Delete(temp, i, Length(temp) - i + 1);
@@ -4212,8 +4142,8 @@ end;
 
 constructor TXmlAttribute.Create;
 begin
-  FName := CInvalidStrHashId;
-  FValue := CInvalidStrHashId;
+  FName := CInvalidStrId;
+  FValue := CInvalidStrId;
   AttributeType := atSingle;
 end;
 
@@ -4224,22 +4154,22 @@ end;
 
 function TXmlAttribute.GetName: String;
 begin
-  Result := Document.StringHashList.GetStrByHash(FName);
+  Result := Document.StringIDList.Resolve(FName);
 end;
 
 function TXmlAttribute.Getvalue: String;
 begin
-  Result := Document.StringHashList.GetStrByHash(FValue);
+  Result := Document.StringIDList.Resolve(FValue);
 end;
 
 procedure TXmlAttribute.SetName(const Value: String);
 begin
-  FName := Document.StringHashList.Add(Value);
+  FName := Document.StringIDList.Intern(Value);
 end;
 
 procedure TXmlAttribute.SetValue(const Value: String);
 begin
-  FValue := Document.StringHashList.Add(Value);
+  FValue := Document.StringIDList.Intern(Value);
   AttributeType := atValue;
 end;
 
